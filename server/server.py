@@ -8,6 +8,12 @@ STORAGE_DIR = Path(__file__).parent / "storage"
 
 
 def build_parser():
+    """
+    Build the command-line argument parser for the server.
+
+    Returns:
+        argparse.ArgumentParser: parser accepting --host and --port.
+    """
     parser = argparse.ArgumentParser(description="server")
     parser.add_argument("--host", default="127.0.0.1", help="Address to bind")
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on")
@@ -15,6 +21,22 @@ def build_parser():
 
 
 def read_exactly_n_bytes(conn, n):
+    """
+    Read exactly n bytes from a socket.
+
+    conn.recv() may return fewer bytes than requested, so this loops until
+    the full amount has been collected.
+
+    Args:
+        conn (socket.socket): connected socket to read from.
+        n (int): exact number of bytes to read.
+
+    Returns:
+        bytes: exactly n bytes.
+
+    Raises:
+        ConnectionError: if the peer closes before n bytes arrive.
+    """
     data = bytearray()
     while len(data) < n:
         chunk = conn.recv(min(4096, n - len(data)))
@@ -25,6 +47,18 @@ def read_exactly_n_bytes(conn, n):
 
 
 def read_message_header(conn):
+    """
+    Read one framed message header from a socket.
+
+    The wire format is a 4-byte big-endian length prefix followed by that many
+    bytes of UTF-8 JSON.
+
+    Args:
+        conn (socket.socket): connected socket to read from.
+
+    Returns:
+        dict: the parsed JSON header, e.g. {"op": "UPLOAD", "filename": ..., "size": ...}.
+    """
     raw_len = read_exactly_n_bytes(conn, 4)
     header_len = struct.unpack(">I", raw_len)[0]
     header_bytes = read_exactly_n_bytes(conn, header_len)
@@ -32,11 +66,28 @@ def read_message_header(conn):
 
 
 def send_reply(conn, status):
+    """
+    Send a JSON reply, framed the same way as incoming messages.
+
+    Args:
+        conn (socket.socket): connected socket to write to.
+        status (str): reply status, e.g. "OK".
+    """
     body = json.dumps({"status": status}).encode("utf-8")
     conn.sendall(struct.pack(">I", len(body)) + body)
 
 
 def handle_upload(conn, header):
+    """
+    Receive the file announced in the header and save it to storage.
+
+    Reads exactly the number of bytes declared in the header, writes them to
+    the storage directory under the given file name, and replies to the client.
+
+    Args:
+        conn (socket.socket): connected socket to read the payload from.
+        header (dict): parsed UPLOAD header with "filename" and "size" keys.
+    """
     filename = header["filename"]
     size = header["size"]
 
@@ -49,6 +100,12 @@ def handle_upload(conn, header):
 
 
 def main():
+    """
+    Start the server, accept a single connection, and handle one upload.
+
+    Binds a TCP socket to the configured host and port, waits for one client,
+    reads the framed header, and stores the uploaded file.
+    """
     args = build_parser().parse_args()
 
     STORAGE_DIR.mkdir(exist_ok=True)
