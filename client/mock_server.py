@@ -1,113 +1,226 @@
-"""Mock server for manually verifying client behaviour.
+"""Minimal fake server used to exercise the client by hand.
 
-Accepts incoming connections and checks that the client speaks the
-expected protocol, without writing anything to disk. Received file bytes
-are counted and discarded, which makes this safe to run repeatedly and
-suitable for large test files.
-
-For each connection it reports whether:
-    - the TCP connection was established
-    - a valid length-prefixed JSON header was received
-    - the number of bytes transferred matches the declared size
-
-Any protocol violation is reported instead of raising, so a
-misbehaving client does not take the server down.
-
-Usage:
-    python mock_server.py     # runs until interrupted with Ctrl+C
+Framed protocol: 4-byte big-endian length + UTF-8 JSON header + optional
+payload, whose length the header announces in "size". Uploads are kept in
+memory only, so a name round-trips but nothing survives a restart.
 """
-
+import argparse
 import json
 import socket
 import struct
 
-HOST = 'localhost'
-PORT = 9000
-CHUNK = 65536
+MAX_HEADER_BYTES = 64 * 1024
+MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
+CONN_TIMEOUT = 30.0
+RECV_CHUNK = 65536
 
-def recv_exactly(sock, n):
-    """Read exactly n bytes from a socket.
+STORE = {"canned.txt": b"canned content from the mock server"}
 
-        A single recv() call may return fewer bytes than requested, since TCP
-        delivers data in arbitrarily sized pieces. This loops until the
-        requested amount has been accumulated, which is required when reading
-        fixed-width fields such as the length prefix.
 
-        Args:
-            sock: A connected socket to read from.
-            n: Exact number of bytes to read.
+def read_exactly_n_bytes(conn, n):
+    """
+    Read exactly n bytes, looping because recv() may return fewer.
 
-        Returns:
-            A bytes object of exactly n bytes.
+    Args:
+        conn (socket.socket): connected socket to read from.
+        n (int): exact number of bytes to read.
 
-        Raises:
-            ConnectionError: If the peer closes the connection before n bytes
-                have been received.
-        """
+    Returns:
+        bytes: exactly n bytes.
 
+    Raises:
+        ValueError: if n is negative.
+        ConnectionError: if the peer closes first. The message reports how
+            many bytes did arrive, which is what you want when a transfer
+            is cut short.
+        TimeoutError: if the socket's timeout expires.
+    """
+    if n < 0:
+        raise ValueError(f"cannot read a negative number of bytes: {n}")
     data = bytearray()
     while len(data) < n:
-        packet = sock.recv(min(CHUNK, n - len(data)))
-        if not packet:
-            raise ConnectionError("Connection closed earlier than expected")
-        data.extend(packet)
+        chunk = conn.recv(min(RECV_CHUNK, n - len(data)))
+        if not chunk:
+            raise ConnectionError(
+                f"connection closed after {len(data)} of {n} bytes"
+            )
+        data.extend(chunk)
     return bytes(data)
 
 
-def check(conn, addr):
-    """Validate one client connection and report the outcome.
+def check_size(value, limit, label):
+    """
+    Validate a peer-announced size before allocating for it.
 
-        Reads the length prefix and JSON header, then consumes and discards
-        the declared number of payload bytes, printing a status line for each
-        stage. Protocol errors are caught and reported rather than
-        propagated, so the server keeps accepting further connections.
+    Args:
+        value: announced size, untrusted and not yet known to be an int.
+        limit (int): largest value accepted, in bytes.
+        label (str): name of the quantity, used in the error message.
 
-        Args:
-            conn: The accepted client socket.
-            addr: The client address tuple, used for logging.
-        """
+    Returns:
+        int: value, unchanged, once known to be safe.
 
-    print(f"[OK] TCP connection established by {addr}")
+    Raises:
+        ValueError: if value is not an int, is a bool (which would
+            otherwise pass as one), is negative, or exceeds limit.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"{label} is not an integer: {value!r}")
+    if value < 0:
+        raise ValueError(f"{label} is negative: {value}")
+    if value > limit:
+        raise ValueError(f"{label} of {value} bytes exceeds the {limit} byte limit")
+    return value
+
+
+def read_message_header(conn):
+    """
+    Read and parse one framed header, leaving any payload on the socket.
+
+    Args:
+        conn (socket.socket): connected socket to read from.
+
+    Returns:
+        dict: the parsed header, e.g. {"op": "UPLOAD", "filename": ..., "size": ...}.
+
+    Raises:
+        ValueError: if the length prefix exceeds MAX_HEADER_BYTES, or the
+            JSON parses to something other than an object.
+        json.JSONDecodeError: if the header bytes are not valid JSON.
+        UnicodeDecodeError: if the header bytes are not valid UTF-8.
+        ConnectionError: if the peer closes mid-header.
+    """
+    header_len = struct.unpack(">I", read_exactly_n_bytes(conn, 4))[0]
+    check_size(header_len, MAX_HEADER_BYTES, "header length")
+    header = json.loads(read_exactly_n_bytes(conn, header_len).decode("utf-8"))
+    if not isinstance(header, dict):
+        raise ValueError(f"header is not a JSON object: {header!r}")
+    return header
+
+
+def send_message(conn, header, payload=b""):
+    """
+    Send a framed message in a single sendall(), so it cannot interleave.
+
+    Args:
+        conn (socket.socket): connected socket to write to.
+        header (dict): serialized as UTF-8 JSON. With a payload, it must
+            announce the length in "size".
+        payload (bytes): raw file bytes appended after the header.
+
+    Raises:
+        OSError: if the peer has already gone away.
+    """
+    body = json.dumps(header).encode("utf-8")
+    conn.sendall(struct.pack(">I", len(body)) + body + payload)
+
+
+def handle_upload(conn, header):
+    """
+    Read the announced payload into STORE and acknowledge.
+
+    Args:
+        conn (socket.socket): connected socket, positioned just after the
+            header, so the next bytes on it are the payload.
+        header (dict): parsed UPLOAD header, carrying "filename" and "size".
+            An existing entry of the same name is overwritten.
+
+    Raises:
+        ValueError: if "size" is unusable, or "filename" is missing, empty,
+            or not a string.
+        ConnectionError: if the peer closes before the payload is complete.
+    """
+    size = check_size(header.get("size"), MAX_PAYLOAD_BYTES, "announced size")
+    name = header.get("filename")
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"missing or invalid filename: {name!r}")
+
+    data = read_exactly_n_bytes(conn, size)
+    STORE[name] = data
+    print(f"Stored {name} ({len(data)} bytes) -> {data[:40]!r}")
+    send_message(conn, {"status": "OK"})
+
+
+def handle_download(conn, header):
+    """
+    Serve a stored file, or reply ERROR with no payload if it is missing.
+
+    Args:
+        conn (socket.socket): connected socket to write to.
+        header (dict): parsed DOWNLOAD header, carrying "filename".
+
+    Raises:
+        OSError: if the reply cannot be written because the peer has gone.
+    """
+    name = header.get("filename")
+    content = STORE.get(name)
+    if content is None:
+        send_message(conn, {"status": "ERROR", "error": f"no such file: {name!r}"})
+        print(f"Rejected download of {name!r}: not found")
+        return
+
+    send_message(conn, {"status": "OK", "size": len(content)}, content)
+    print(f"Sent {name} ({len(content)} bytes)")
+
+
+def handle_connection(conn, addr):
+    """
+    Answer one request. This is the server's error boundary.
+
+    Every failure a client can provoke becomes an ERROR reply rather than a
+    crash. The reply itself is guarded too, since a vanished peer is one of
+    the cases being handled.
+
+    Args:
+        conn (socket.socket): accepted connection; the caller owns and
+            closes it.
+        addr (tuple): peer address, used only in log lines.
+    """
+    print(f"Connection from {addr}")
+    conn.settimeout(CONN_TIMEOUT)
     try:
-        header_len = struct.unpack(">I", recv_exactly(conn, 4))[0]
-        header = json.loads(recv_exactly(conn, header_len).decode('utf-8'))
-        print(f"[OK] header received: {header}")
+        header = read_message_header(conn)
+        print("Received header:", header)
 
-        size = int(header['size'])
-        received = 0
-        while received < size:
-            chunk = conn.recv(min(CHUNK, size - received))
-            if not chunk:
-                break
-            received += len(chunk)
-
-        if received == size:
-            print(f"[OK] trasnfer completed: {received}/{size} bytes\n")
+        op = header.get("op")
+        if op == "UPLOAD":
+            handle_upload(conn, header)
+        elif op == "DOWNLOAD":
+            handle_download(conn, header)
         else:
-            print(f"[!!] transfer incompleted: {received}/{size} bytes\n")
-    except (ConnectionError, ValueError, KeyError, struct.error) as e:
-        print(f"[!!] the client did not respect the protocol: {e}\n")
+            send_message(conn, {"status": "ERROR", "error": f"unknown op: {op!r}"})
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error handling {addr}: {type(exc).__name__}: {exc}")
+        try:
+            send_message(conn, {"status": "ERROR", "error": str(exc)})
+        except OSError:
+            pass
 
 
 def main():
-    """Bind the listening socket and serve connections until interrupted.
+    """
+    Accept and serve connections one at a time until Ctrl-C.
 
-        Handles one client at a time, sequentially. Ctrl+C shuts the server
-        down cleanly.
-        """
+    SO_REUSEADDR is set so a restart need not wait out TIME_WAIT.
+    """
+    parser = argparse.ArgumentParser(description="mock server")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=9000)
+    args = parser.parse_args()
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.bind((HOST, PORT))
-        sock.listen()
-        print(f"[*] Mock server listening on {HOST}:{PORT}  (Ctrl+C to exit)\n")
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
+        server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_sock.bind((args.host, args.port))
+        server_sock.listen(5)
+        print(f"Mock server listening on {args.host}:{args.port} (Ctrl-C to stop)")
+
         try:
             while True:
-                conn, addr = sock.accept()
+                conn, addr = server_sock.accept()
                 with conn:
-                    check(conn, addr)
+                    handle_connection(conn, addr)
         except KeyboardInterrupt:
-            print("\n[*] Mock server stopped")
+            print("\nShutting down")
 
 
 if __name__ == "__main__":
