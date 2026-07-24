@@ -65,16 +65,17 @@ def read_message_header(conn):
     return json.loads(header_bytes.decode("utf-8"))
 
 
-def send_reply(conn, status):
+def send_message(conn, header, payload=b""):
     """
-    Send a JSON reply, framed the same way as incoming messages.
+    Send a framed message: 4-byte length + JSON header + optional payload.
 
     Args:
         conn (socket.socket): connected socket to write to.
-        status (str): reply status, e.g. "OK".
+        header (dict): message header, serialized as UTF-8 JSON.
+        payload (bytes): raw file bytes appended after the header.
     """
-    body = json.dumps({"status": status}).encode("utf-8")
-    conn.sendall(struct.pack(">I", len(body)) + body)
+    body = json.dumps(header).encode("utf-8")
+    conn.sendall(struct.pack(">I", len(body)) + body + payload)
 
 
 def handle_upload(conn, header):
@@ -95,16 +96,34 @@ def handle_upload(conn, header):
     with open(STORAGE_DIR / filename, "wb") as f:
         f.write(data)
 
-    send_reply(conn, "OK")
+    send_message(conn, {"status": "OK"})
     print(f"Saved {filename} ({size} bytes)")
+
+
+def handle_download(conn, header):
+    """
+    Send the file requested in the header back to the client.
+
+    Reads the file from the storage directory and replies with its size,
+    followed by the raw file bytes.
+
+    Args:
+        conn (socket.socket): connected socket to write to.
+        header (dict): parsed DOWNLOAD header with a "filename" key.
+    """
+    filename = header["filename"]
+    data = (STORAGE_DIR / filename).read_bytes()
+
+    send_message(conn, {"status": "OK", "size": len(data)}, data)
+    print(f"Sent {filename} ({len(data)} bytes)")
 
 
 def main():
     """
-    Start the server, accept a single connection, and handle one upload.
+    Start the server, accept a single connection, and handle one request.
 
     Binds a TCP socket to the configured host and port, waits for one client,
-    reads the framed header, and stores the uploaded file.
+    reads the framed header and dispatches on its "op" field.
     """
     args = build_parser().parse_args()
 
@@ -120,7 +139,11 @@ def main():
         with conn:
             print(f"Connection from {addr}")
             header = read_message_header(conn)
-            handle_upload(conn, header)
+
+            if header["op"] == "UPLOAD":
+                handle_upload(conn, header)
+            elif header["op"] == "DOWNLOAD":
+                handle_download(conn, header)
 
 
 if __name__ == "__main__":
