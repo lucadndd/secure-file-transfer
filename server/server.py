@@ -175,10 +175,8 @@ def handle_request(conn):
 
 def main():
     """
-    Bind the listening socket, accept one connection and hand it to handle_request.
-
-    A peer that disconnects mid-transfer is reported and the connection is
-    closed properly.
+    Bind the listening socket and serve one connection after another.
+    Each connection carries a single request and is then closed.
     """
     args = build_parser().parse_args()
 
@@ -187,16 +185,20 @@ def main():
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind((args.host, args.port))
-        server_sock.listen(1)
+        server_sock.listen()
         print(f"Server listening on {args.host}:{args.port}")
 
-        conn, addr = server_sock.accept()
-        with conn:
-            print(f"Connection from {addr}")
-            try:
-                handle_request(conn)
-            except (ConnectionError, OSError) as e:
-                print(f"Connection lost: {e}")
+        try:
+            while True:
+                conn, addr = server_sock.accept()
+                with conn:
+                    print(f"Connection from {addr}")
+                    try:
+                        handle_request(conn)
+                    except (ConnectionError, OSError) as e:
+                        print(f"Connection lost: {e}")
+        except KeyboardInterrupt:
+            print("\nShutting down")
 
 
 if __name__ == "__main__":
