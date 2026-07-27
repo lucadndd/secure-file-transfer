@@ -176,6 +176,9 @@ def handle_request(conn):
 def main():
     """
     Bind the listening socket, accept one connection and hand it to handle_request.
+
+    A peer that disconnects mid-transfer is reported and the connection is
+    closed properly.
     """
     args = build_parser().parse_args()
 
@@ -190,7 +193,10 @@ def main():
         conn, addr = server_sock.accept()
         with conn:
             print(f"Connection from {addr}")
-            handle_request(conn)
+            try:
+                handle_request(conn)
+            except (ConnectionError, OSError) as e:
+                print(f"Connection lost: {e}")
 
 
 if __name__ == "__main__":
