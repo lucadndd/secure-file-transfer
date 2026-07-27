@@ -121,11 +121,8 @@ def handle_upload(conn, header):
 
 def handle_download(conn, header):
     """
-    Send the file requested in the header back to the client.
-
-    Reads the file from the storage directory and replies with its size,
-    followed by the raw file bytes. Unsafe file names are rejected before
-    anything is read.
+    Send the file requested in the header back to the client
+    .
 
     Args:
         conn (socket.socket): connected socket to write to.
@@ -138,7 +135,13 @@ def handle_download(conn, header):
         print(f"Rejected unsafe file name: {filename!r}")
         return
 
-    data = (STORAGE_DIR / filename).read_bytes()
+    path = STORAGE_DIR / filename
+    if not path.is_file():
+        send_message(conn, {"status": "ERROR", "reason": "not_found"})
+        print(f"Requested file not found: {filename}")
+        return
+
+    data = path.read_bytes()
 
     send_message(conn, {"status": "OK", "size": len(data)}, data)
     print(f"Sent {filename} ({len(data)} bytes)")
