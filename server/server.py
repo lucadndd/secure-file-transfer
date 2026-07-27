@@ -50,14 +50,16 @@ def read_message_header(conn):
     """
     Read one framed message header from a socket.
 
-    The wire format is a 4-byte big-endian length prefix followed by that many
-    bytes of UTF-8 JSON.
-
     Args:
         conn (socket.socket): connected socket to read from.
 
     Returns:
-        dict: the parsed JSON header, e.g. {"op": "UPLOAD", "filename": ..., "size": ...}.
+        The parsed JSON header, normally a dict such as
+        {"op": "UPLOAD", "filename": ..., "size": ...}.
+
+    Raises:
+        UnicodeDecodeError, json.JSONDecodeError: if the header is malformed.
+        ConnectionError: if the peer closes before the header is complete.
     """
     raw_len = read_exactly_n_bytes(conn, 4)
     header_len = struct.unpack(">I", raw_len)[0]
@@ -78,19 +80,39 @@ def send_message(conn, header, payload=b""):
     conn.sendall(struct.pack(">I", len(body)) + body + payload)
 
 
+def is_safe_name(name):
+    """
+    Check whether a file name is safe.
+
+    Args:
+        name (str): file name taken from a message header.
+
+    Returns:
+        bool: False if the name could escape the storage directory.
+    """
+    return bool(name) and "/" not in name and "\\" not in name and ".." not in name
+
+
 def handle_upload(conn, header):
     """
     Receive the file announced in the header and save it to storage.
-
-    Reads exactly the number of bytes declared in the header, writes them to
-    the storage directory under the given file name, and replies to the client.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
         header (dict): parsed UPLOAD header with "filename" and "size" keys.
     """
-    filename = header["filename"]
-    size = header["size"]
+    filename = header.get("filename")
+    size = header.get("size")
+
+    if not isinstance(size, int) or size < 0:
+        send_message(conn, {"status": "ERROR", "reason": "bad_request"})
+        print("Rejected upload with missing or invalid size")
+        return
+
+    if not is_safe_name(filename):
+        send_message(conn, {"status": "ERROR", "reason": "invalid_name"})
+        print(f"Rejected unsafe file name: {filename!r}")
+        return
 
     data = read_exactly_n_bytes(conn, size)
     with open(STORAGE_DIR / filename, "wb") as f:
@@ -104,26 +126,59 @@ def handle_download(conn, header):
     """
     Send the file requested in the header back to the client.
 
-    Reads the file from the storage directory and replies with its size,
-    followed by the raw file bytes.
-
     Args:
         conn (socket.socket): connected socket to write to.
         header (dict): parsed DOWNLOAD header with a "filename" key.
     """
-    filename = header["filename"]
-    data = (STORAGE_DIR / filename).read_bytes()
+    filename = header.get("filename")
+
+    if not is_safe_name(filename):
+        send_message(conn, {"status": "ERROR", "reason": "invalid_name"})
+        print(f"Rejected unsafe file name: {filename!r}")
+        return
+
+    path = STORAGE_DIR / filename
+    if not path.is_file():
+        send_message(conn, {"status": "ERROR", "reason": "not_found"})
+        print(f"Requested file not found: {filename}")
+        return
+
+    data = path.read_bytes()
 
     send_message(conn, {"status": "OK", "size": len(data)}, data)
     print(f"Sent {filename} ({len(data)} bytes)")
 
 
+def handle_request(conn):
+    """
+    Read one request and dispatch it to the matching handler.
+
+    Args:
+        conn (socket.socket): connected socket to serve.
+    """
+    try:
+        header = read_message_header(conn)
+    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+        send_message(conn, {"status": "ERROR", "reason": "bad_request"})
+        print(f"Rejected malformed request: {e}")
+        return
+
+    op = header.get("op")
+    if op == "UPLOAD":
+        handle_upload(conn, header)
+    elif op == "DOWNLOAD":
+        handle_download(conn, header)
+    else:
+        send_message(conn, {"status": "ERROR", "reason": "bad_request"})
+        print(f"Rejected unknown operation: {op!r}")
+
+
 def main():
     """
-    Start the server, accept a single connection, and handle one request.
+    Bind the listening socket, accept one connection and hand it to handle_request.
 
-    Binds a TCP socket to the configured host and port, waits for one client,
-    reads the framed header and dispatches on its "op" field.
+    A peer that disconnects mid-transfer is reported and the connection is
+    closed properly.
     """
     args = build_parser().parse_args()
 
@@ -138,12 +193,10 @@ def main():
         conn, addr = server_sock.accept()
         with conn:
             print(f"Connection from {addr}")
-            header = read_message_header(conn)
-
-            if header["op"] == "UPLOAD":
-                handle_upload(conn, header)
-            elif header["op"] == "DOWNLOAD":
-                handle_download(conn, header)
+            try:
+                handle_request(conn)
+            except (ConnectionError, OSError) as e:
+                print(f"Connection lost: {e}")
 
 
 if __name__ == "__main__":
