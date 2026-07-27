@@ -78,12 +78,26 @@ def send_message(conn, header, payload=b""):
     conn.sendall(struct.pack(">I", len(body)) + body + payload)
 
 
+def is_safe_name(name):
+    """
+    Reject file names that could escape the storage directory.
+
+    Args:
+        name (str): file name taken from a message header.
+
+    Returns:
+        bool: True if the name is safe to use.
+    """
+    return bool(name) and "/" not in name and "\\" not in name and ".." not in name
+
+
 def handle_upload(conn, header):
     """
     Receive the file announced in the header and save it to storage.
 
     Reads exactly the number of bytes declared in the header, writes them to
     the storage directory under the given file name, and replies to the client.
+    Unsafe file names are rejected before anything is written.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
@@ -91,6 +105,11 @@ def handle_upload(conn, header):
     """
     filename = header["filename"]
     size = header["size"]
+
+    if not is_safe_name(filename):
+        send_message(conn, {"status": "ERROR", "reason": "invalid_name"})
+        print(f"Rejected unsafe file name: {filename!r}")
+        return
 
     data = read_exactly_n_bytes(conn, size)
     with open(STORAGE_DIR / filename, "wb") as f:
@@ -105,13 +124,20 @@ def handle_download(conn, header):
     Send the file requested in the header back to the client.
 
     Reads the file from the storage directory and replies with its size,
-    followed by the raw file bytes.
+    followed by the raw file bytes. Unsafe file names are rejected before
+    anything is read.
 
     Args:
         conn (socket.socket): connected socket to write to.
         header (dict): parsed DOWNLOAD header with a "filename" key.
     """
     filename = header["filename"]
+
+    if not is_safe_name(filename):
+        send_message(conn, {"status": "ERROR", "reason": "invalid_name"})
+        print(f"Rejected unsafe file name: {filename!r}")
+        return
+
     data = (STORAGE_DIR / filename).read_bytes()
 
     send_message(conn, {"status": "OK", "size": len(data)}, data)
