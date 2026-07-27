@@ -12,6 +12,12 @@ MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
 RECV_CHUNK = 65536
 
+REASON_MESSAGES = {
+    "not_found": "the server has no file with that name",
+    "invalid_name": "that file name is not allowed (no '/', '\\' or '..')",
+    "bad_request": "the server could not understand the request",
+}
+
 
 def build_parser():
     """Build the command-line argument parser for the client."""
@@ -40,8 +46,7 @@ def read_exactly_n_bytes(sock, n):
         chunk = sock.recv(min(RECV_CHUNK, n - len(data)))
         if not chunk:
             raise ConnectionError(
-                f"connection closed after {len(data)} of {n} bytes"
-            )
+                f"connection closed after {len(data)} of {n} bytes")
         data.extend(chunk)
     return bytes(data)
 
@@ -55,6 +60,19 @@ def check_size(value, limit, label):
     if value > limit:
         raise ValueError(f"{label} of {value} bytes exceeds the {limit} byte limit")
     return value
+
+
+def is_valid_name(name):
+    """
+    Report whether a file name is safe to send or save under.
+
+    Args:
+        name (str): candidate file name.
+
+    Returns:
+        bool: False if the name is empty or could escape a directory.
+    """
+    return bool(name) and not any(bad in name for bad in ("/", "\\", ".."))
 
 
 def read_message_header(sock):
@@ -78,19 +96,21 @@ def send_message(sock, header, payload=b""):
     sock.sendall(struct.pack(">I", len(body)) + body + payload)
 
 
-def require_ok(reply, what):
+def require_ok(reply):
     """Raise unless the server replied with a success status."""
-    if reply.get("status") != "OK":
-        raise RuntimeError(
-            f"server refused the {what}: {reply.get('error', reply)}"
-        )
-    return reply
+    if reply.get("status") == "OK":
+        return reply
+    reason = reply.get("reason")
+    detail = REASON_MESSAGES.get(reason, f"unrecognised reason {reason!r}")
+    raise RuntimeError(f"Server rejected the request: {detail}.")
 
 
 def do_upload(sock, filepath):
     """Send a local file to the server and report the reply."""
     if not filepath.is_file():
         raise FileNotFoundError(f"not a readable file: {filepath}")
+    if not is_valid_name(filepath.name):
+        raise ValueError(f"cannot upload under the name {filepath.name!r}")
 
     data = filepath.read_bytes()
     check_size(len(data), MAX_PAYLOAD_BYTES, "file size")
@@ -100,26 +120,27 @@ def do_upload(sock, filepath):
         {"op": "UPLOAD", "filename": filepath.name, "size": len(data)},
         data,
     )
-    require_ok(read_message_header(sock), "upload")
+    require_ok(read_message_header(sock))
     print(f"Uploaded {filepath.name} ({len(data)} bytes)")
 
 
 def do_download(sock, filename):
-    """Request a file from the server and save it into the downloads folder."""
-    safe_name = Path(filename).name
-    if not safe_name or safe_name in {".", ".."}:
-        raise ValueError(f"unusable file name: {filename!r}")
+    """Request a file from the server and save it into the 'downloads' folder."""
+    if not is_valid_name(filename):
+        raise ValueError(
+            f"invalid file name {filename!r}: it may not contain '/', '\\' or '..'"
+        )
 
-    send_message(sock, {"op": "DOWNLOAD", "filename": safe_name})
+    send_message(sock, {"op": "DOWNLOAD", "filename": filename})
 
-    reply = require_ok(read_message_header(sock), "download")
+    reply = require_ok(read_message_header(sock))
     size = check_size(reply.get("size"), MAX_PAYLOAD_BYTES, "announced size")
     data = read_exactly_n_bytes(sock, size)
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    destination = DOWNLOAD_DIR / safe_name
+    destination = DOWNLOAD_DIR / filename
     destination.write_bytes(data)
-    print(f"Downloaded {safe_name} ({len(data)} bytes) -> {destination}")
+    print(f"Downloaded {filename} ({len(data)} bytes) -> {destination}")
 
 
 def main():
@@ -134,9 +155,22 @@ def main():
                 do_upload(sock, Path(args.filename))
             else:
                 do_download(sock, args.filename)
-    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
+
+    except ConnectionError as exc:
+        print(f"Connection to the server was lost: {exc}", file=sys.stderr)
+        return 1
+    except TimeoutError:
+        print("The server did not respond in time.", file=sys.stderr)
+        return 1
+    except RuntimeError as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    except (OSError, ValueError, struct.error, json.JSONDecodeError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130
     return 0
 
 
