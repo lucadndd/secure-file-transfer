@@ -7,6 +7,7 @@ from pathlib import Path
 STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
+SOCKET_TIMEOUT = 30.0
 
 
 def build_parser():
@@ -202,7 +203,8 @@ def handle_request(conn):
 def main():
     """
     Bind the listening socket and serve one connection after another.
-    Each connection carries a single request and is then closed.
+    Each connection carries a single request and is then closed. Connections
+    time out, so that a silent peer cannot hold the loop indefinitely.
     """
     args = build_parser().parse_args()
 
@@ -218,6 +220,7 @@ def main():
             while True:
                 conn, addr = server_sock.accept()
                 with conn:
+                    conn.settimeout(SOCKET_TIMEOUT)
                     print(f"Connection from {addr}")
                     try:
                         handle_request(conn)
