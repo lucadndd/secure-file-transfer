@@ -99,12 +99,20 @@ def is_safe_name(name):
     Check whether a file name is safe.
 
     Args:
-        name (str): file name taken from a message header.
+        name: file name taken from a message header; any JSON value, since
+        the peer chooses what to send.
 
     Returns:
-        bool: False if the name could escape the storage directory.
+        bool: False if the name is not a non-empty string, or if it could
+        escape the storage directory.
     """
-    return bool(name) and "/" not in name and "\\" not in name and ".." not in name
+    return (
+        isinstance(name, str)
+        and bool(name)
+        and "/" not in name
+        and "\\" not in name
+        and ".." not in name
+    )
 
 
 def handle_upload(conn, header):
