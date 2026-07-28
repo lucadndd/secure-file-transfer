@@ -6,6 +6,7 @@ from pathlib import Path
 
 STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
+MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 
 
 def build_parser():
@@ -119,6 +120,9 @@ def handle_upload(conn, header):
     """
     Receive the file announced in the header and save it to storage.
 
+    The announced size is checked before reading, so that a peer cannot make
+    the server allocate an arbitrary amount of memory.
+
     Args:
         conn (socket.socket): connected socket to read the payload from.
         header (dict): parsed UPLOAD header with "filename" and "size" keys.
@@ -126,9 +130,9 @@ def handle_upload(conn, header):
     filename = header.get("filename")
     size = header.get("size")
 
-    if not isinstance(size, int) or size < 0:
+    if not isinstance(size, int) or size < 0 or size > MAX_PAYLOAD_BYTES:
         send_message(conn, {"status": "ERROR", "reason": "bad_request"})
-        print("Rejected upload with missing or invalid size")
+        print(f"Rejected upload with missing or invalid size: {size!r}")
         return
 
     if not is_safe_name(filename):
