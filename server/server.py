@@ -5,6 +5,7 @@ import struct
 from pathlib import Path
 
 STORAGE_DIR = Path(__file__).parent / "storage"
+MAX_HEADER_BYTES = 64 * 1024
 
 
 def build_parser():
@@ -50,6 +51,9 @@ def read_message_header(conn):
     """
     Read one framed message header from a socket.
 
+    The announced length is checked before reading, so that a peer cannot
+    make the server allocate an arbitrary amount of memory.
+
     Args:
         conn (socket.socket): connected socket to read from.
 
@@ -58,12 +62,18 @@ def read_message_header(conn):
         {"op": "UPLOAD", "filename": ..., "size": ...}.
 
     Raises:
-        ValueError: if the header bytes are not valid UTF-8, or not valid
-        JSON, or parse to something other than an object.
+        ValueError: if the announced length exceeds MAX_HEADER_BYTES, or if
+        the header bytes are not valid UTF-8, or not valid JSON, or parse to
+        something other than an object.
         ConnectionError: if the peer closes before the header is complete.
     """
     raw_len = read_exactly_n_bytes(conn, 4)
     header_len = struct.unpack(">I", raw_len)[0]
+    if header_len > MAX_HEADER_BYTES:
+        raise ValueError(
+            f"announced header of {header_len} bytes exceeds the "
+            f"{MAX_HEADER_BYTES} byte limit"
+        )
     header_bytes = read_exactly_n_bytes(conn, header_len)
     header = json.loads(header_bytes.decode("utf-8"))
     if not isinstance(header, dict):
