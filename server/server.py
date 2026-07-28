@@ -54,17 +54,21 @@ def read_message_header(conn):
         conn (socket.socket): connected socket to read from.
 
     Returns:
-        The parsed JSON header, normally a dict such as
+        dict: the parsed JSON header, such as
         {"op": "UPLOAD", "filename": ..., "size": ...}.
 
     Raises:
-        UnicodeDecodeError, json.JSONDecodeError: if the header is malformed.
+        ValueError: if the header bytes are not valid UTF-8, or not valid
+        JSON, or parse to something other than an object.
         ConnectionError: if the peer closes before the header is complete.
     """
     raw_len = read_exactly_n_bytes(conn, 4)
     header_len = struct.unpack(">I", raw_len)[0]
     header_bytes = read_exactly_n_bytes(conn, header_len)
-    return json.loads(header_bytes.decode("utf-8"))
+    header = json.loads(header_bytes.decode("utf-8"))
+    if not isinstance(header, dict):
+        raise ValueError(f"header is not a JSON object: {header!r}")
+    return header
 
 
 def send_message(conn, header, payload=b""):
@@ -158,7 +162,7 @@ def handle_request(conn):
     """
     try:
         header = read_message_header(conn)
-    except (UnicodeDecodeError, json.JSONDecodeError) as e:
+    except ValueError as e:
         send_message(conn, {"status": "ERROR", "reason": "bad_request"})
         print(f"Rejected malformed request: {e}")
         return
