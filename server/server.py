@@ -4,6 +4,11 @@ import socket
 import struct
 from pathlib import Path
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CERTS_DIR = PROJECT_ROOT / "certs"
+DEFAULT_CERT_PATH = CERTS_DIR / "server-cert.pem"
+DEFAULT_KEY_PATH = CERTS_DIR / "server-key.pem"
+
 STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
@@ -14,12 +19,19 @@ def build_parser():
     """
     Build the command-line argument parser for the server.
 
+    The certificate paths are resolved from the location of this file, so
+    that the server can be started from any working directory.
+
     Returns:
-        argparse.ArgumentParser: parser accepting --host and --port.
+        argparse.ArgumentParser: parser accepting --host, --port, --certfile and --keyfile.
     """
     parser = argparse.ArgumentParser(description="server")
     parser.add_argument("--host", default="127.0.0.1", help="Address to bind")
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on")
+    parser.add_argument("--certfile", type=Path, default=DEFAULT_CERT_PATH,
+        help="Certificate presented to clients",)
+    parser.add_argument("--keyfile", type=Path, default=DEFAULT_KEY_PATH,
+        help="Private key matching the certificate",)
     return parser
 
 
