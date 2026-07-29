@@ -236,8 +236,9 @@ def handle_request(conn):
 def main():
     """
     Bind the listening socket and serve one TLS connection after another.
-    Each connection carries a single request and is then closed. Connections
-    time out, so that a silent peer cannot hold the loop indefinitely.
+    Each connection carries a single request and is then closed. A failed
+    handshake costs that connection only, and connections time out, so that
+    a silent peer cannot hold the loop indefinitely.
     """
     args = build_parser().parse_args()
 
@@ -256,11 +257,13 @@ def main():
                 with conn:
                     conn.settimeout(SOCKET_TIMEOUT)
                     print(f"Connection from {addr}")
-                    with context.wrap_socket(conn, server_side=True) as tls_conn:
-                        try:
+                    try:
+                        with context.wrap_socket(conn, server_side=True) as tls_conn:
                             handle_request(tls_conn)
-                        except (ConnectionError, OSError) as e:
-                            print(f"Connection lost: {e}")
+                    except ssl.SSLError as e:
+                        print(f"TLS handshake failed: {e}")
+                    except (ConnectionError, OSError) as e:
+                        print(f"Connection lost: {e}")
         except KeyboardInterrupt:
             print("\nShutting down")
 
