@@ -1,6 +1,7 @@
 import argparse
 import json
 import socket
+import ssl
 import struct
 from pathlib import Path
 
@@ -29,10 +30,30 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1", help="Address to bind")
     parser.add_argument("--port", type=int, default=9000, help="Port to listen on")
     parser.add_argument("--certfile", type=Path, default=DEFAULT_CERT_PATH,
-        help="Certificate presented to clients",)
+        help="Certificate presented to clients")
     parser.add_argument("--keyfile", type=Path, default=DEFAULT_KEY_PATH,
-        help="Private key matching the certificate",)
+        help="Private key matching the certificate")
     return parser
+
+
+def build_tls_context(certfile, keyfile):
+    """
+    Build the TLS context the server presents to clients.
+
+    Args:
+        certfile (Path): certificate to present.
+        keyfile (Path): private key matching the certificate.
+
+    Returns:
+        ssl.SSLContext: context ready to wrap accepted connections.
+
+    Raises:
+        OSError: if either file cannot be read.
+        ssl.SSLError: if the key does not match the certificate.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    return context
 
 
 def read_exactly_n_bytes(conn, n):
@@ -214,19 +235,20 @@ def handle_request(conn):
 
 def main():
     """
-    Bind the listening socket and serve one connection after another.
+    Bind the listening socket and serve one TLS connection after another.
     Each connection carries a single request and is then closed. Connections
     time out, so that a silent peer cannot hold the loop indefinitely.
     """
     args = build_parser().parse_args()
 
     STORAGE_DIR.mkdir(exist_ok=True)
+    context = build_tls_context(args.certfile, args.keyfile)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind((args.host, args.port))
         server_sock.listen()
-        print(f"Server listening on {args.host}:{args.port}")
+        print(f"Server listening on {args.host}:{args.port} over TLS")
 
         try:
             while True:
@@ -234,10 +256,11 @@ def main():
                 with conn:
                     conn.settimeout(SOCKET_TIMEOUT)
                     print(f"Connection from {addr}")
-                    try:
-                        handle_request(conn)
-                    except (ConnectionError, OSError) as e:
-                        print(f"Connection lost: {e}")
+                    with context.wrap_socket(conn, server_side=True) as tls_conn:
+                        try:
+                            handle_request(tls_conn)
+                        except (ConnectionError, OSError) as e:
+                            print(f"Connection lost: {e}")
         except KeyboardInterrupt:
             print("\nShutting down")
 
