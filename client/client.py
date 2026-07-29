@@ -2,11 +2,15 @@
 import argparse
 import json
 import socket
+import ssl
 import struct
 import sys
 from pathlib import Path
 
-DOWNLOAD_DIR = Path(__file__).resolve().parent / "downloads"
+BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
+DOWNLOAD_DIR = BASE_DIR / "downloads"
+CA_CERT_PATH = PROJECT_ROOT / "certs" / "ca-cert.pem"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
@@ -27,6 +31,28 @@ def build_parser():
     parser.add_argument("--host", default="127.0.0.1", help="Server address")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
     return parser
+
+
+def build_tls_context():
+    """
+    Build the TLS context used for the outgoing connection.
+
+    Returns:
+        ssl.SSLContext: context that authenticates the server.
+
+    Raises:
+        FileNotFoundError: if the CA certificate has not been generated yet.
+    """
+    if not CA_CERT_PATH.is_file():
+        raise FileNotFoundError(
+            f"CA certificate not found at {CA_CERT_PATH}: "
+            f"run certs/generate_certs.py first"
+        )
+    context = ssl.create_default_context(cafile=str(CA_CERT_PATH))
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    return context
 
 
 def read_exactly_n_bytes(sock, n):
@@ -148,14 +174,31 @@ def main():
     args = build_parser().parse_args()
 
     try:
+        context = build_tls_context()
         with socket.create_connection(
             (args.host, args.port), timeout=SOCKET_TIMEOUT
-        ) as sock:
-            if args.op == "UPLOAD":
-                do_upload(sock, Path(args.filename))
-            else:
-                do_download(sock, args.filename)
+        ) as raw_sock:
+            with context.wrap_socket(raw_sock, server_hostname=args.host) as sock:
+                cert = sock.getpeercert()
+                subject = dict(x[0] for x in cert["subject"])
+                print(
+                    f"{sock.version()} with {sock.cipher()[0]}, "
+                    f"server authenticated as {subject.get('commonName')}"
+                )
+                if args.op == "UPLOAD":
+                    do_upload(sock, Path(args.filename))
+                else:
+                    do_download(sock, args.filename)
 
+    except ssl.SSLCertVerificationError as exc:
+        print(
+            f"Could not authenticate the server: {exc.verify_message}",
+            file=sys.stderr,
+        )
+        return 1
+    except ssl.SSLError as exc:
+        print(f"TLS handshake failed: {exc}", file=sys.stderr)
+        return 1
     except ConnectionError as exc:
         print(f"Connection to the server was lost: {exc}", file=sys.stderr)
         return 1
