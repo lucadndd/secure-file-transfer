@@ -1,0 +1,7 @@
+# Generated key material
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
