@@ -8,8 +8,9 @@ import sys
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = BASE_DIR.parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
-CA_CERT_PATH = BASE_DIR / "certs" / "ca-cert.pem"
+CA_CERT_PATH = PROJECT_ROOT / "certs" / "ca-cert.pem"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
