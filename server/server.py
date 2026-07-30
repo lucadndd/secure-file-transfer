@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CERTS_DIR = PROJECT_ROOT / "certs"
 DEFAULT_CERT_PATH = CERTS_DIR / "server-cert.pem"
 DEFAULT_KEY_PATH = CERTS_DIR / "server-key.pem"
+DEFAULT_CA_PATH = CERTS_DIR / "ca-cert.pem"
 
 STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
@@ -24,7 +25,7 @@ def build_parser():
     that the server can be started from any working directory.
 
     Returns:
-        argparse.ArgumentParser: parser accepting --host, --port, --certfile and --keyfile.
+        argparse.ArgumentParser: parser accepting --host, --port, --certfile, --keyfile and --cafile.
     """
     parser = argparse.ArgumentParser(description="server")
     parser.add_argument("--host", default="127.0.0.1", help="Address to bind")
@@ -33,27 +34,53 @@ def build_parser():
         help="Certificate presented to clients")
     parser.add_argument("--keyfile", type=Path, default=DEFAULT_KEY_PATH,
         help="Private key matching the certificate")
+    parser.add_argument("--cafile", type=Path, default=DEFAULT_CA_PATH,
+        help="Authority that client certificates must chain to")
     return parser
 
 
-def build_tls_context(certfile, keyfile):
+def build_tls_context(certfile, keyfile, cafile):
     """
     Build the TLS context the server presents to clients.
+
+    Every client must present a certificate that chains to the given
+    authority, so an unauthenticated peer is turned away during the
+    handshake and never reaches the application protocol.
 
     Args:
         certfile (Path): certificate to present.
         keyfile (Path): private key matching the certificate.
+        cafile (Path): authority that client certificates must chain to.
 
     Returns:
         ssl.SSLContext: context ready to wrap accepted connections.
 
     Raises:
-        OSError: if either file cannot be read.
-        ssl.SSLError: if the key does not match the certificate.
+        OSError: if any of the files cannot be read. ssl.SSLError: if the key does not match the certificate.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    context.load_verify_locations(cafile=cafile)
+    context.verify_mode = ssl.CERT_REQUIRED
     return context
+
+
+def peer_common_name(tls_conn):
+    """
+    Read the common name from the certificate the peer presented.
+
+    Only meaningful after a successful handshake: with CERT_REQUIRED a
+    client without a valid certificate never gets this far.
+
+    Args:
+        tls_conn (ssl.SSLSocket): connection whose handshake has completed.
+
+    Returns:
+        str: the subject common name, or "unknown" if the certificate
+        carries none.
+    """
+    subject = dict(entry[0] for entry in tls_conn.getpeercert()["subject"])
+    return subject.get("commonName", "unknown")
 
 
 def read_exactly_n_bytes(conn, n):
@@ -236,20 +263,20 @@ def handle_request(conn):
 def main():
     """
     Bind the listening socket and serve one TLS connection after another.
-    Each connection carries a single request and is then closed. A failed
-    handshake costs that connection only, and connections time out, so that
-    a silent peer cannot hold the loop indefinitely.
+    Each connection carries a single request and is then closed. A client
+    that fails authentication costs that connection only, and connections
+    time out, so that a silent peer cannot hold the loop indefinitely.
     """
     args = build_parser().parse_args()
 
     STORAGE_DIR.mkdir(exist_ok=True)
-    context = build_tls_context(args.certfile, args.keyfile)
+    context = build_tls_context(args.certfile, args.keyfile, args.cafile)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind((args.host, args.port))
         server_sock.listen()
-        print(f"Server listening on {args.host}:{args.port} over TLS")
+        print(f"Server listening on {args.host}:{args.port} over  mTLS")
 
         try:
             while True:
@@ -259,6 +286,7 @@ def main():
                     print(f"Connection from {addr}")
                     try:
                         with context.wrap_socket(conn, server_side=True) as tls_conn:
+                            print(f"Authenticated client: {peer_common_name(tls_conn)}")
                             handle_request(tls_conn)
                     except ssl.SSLError as e:
                         print(f"TLS handshake failed: {e}")
