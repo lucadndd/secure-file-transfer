@@ -39,23 +39,29 @@ def build_parser():
     return parser
 
 
-def build_tls_context(certfile, keyfile):
+def build_tls_context(certfile, keyfile, cafile):
     """
     Build the TLS context the server presents to clients.
+
+    Every client must present a certificate that chains to the given
+    authority, so an unauthenticated peer is turned away during the
+    handshake and never reaches the application protocol.
 
     Args:
         certfile (Path): certificate to present.
         keyfile (Path): private key matching the certificate.
+        cafile (Path): authority that client certificates must chain to.
 
     Returns:
         ssl.SSLContext: context ready to wrap accepted connections.
 
     Raises:
-        OSError: if either file cannot be read.
-        ssl.SSLError: if the key does not match the certificate.
+        OSError: if any of the files cannot be read. ssl.SSLError: if the key does not match the certificate.
     """
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    context.load_verify_locations(cafile=cafile)
+    context.verify_mode = ssl.CERT_REQUIRED
     return context
 
 
@@ -239,20 +245,20 @@ def handle_request(conn):
 def main():
     """
     Bind the listening socket and serve one TLS connection after another.
-    Each connection carries a single request and is then closed. A failed
-    handshake costs that connection only, and connections time out, so that
-    a silent peer cannot hold the loop indefinitely.
+    Each connection carries a single request and is then closed. A client
+    that fails authentication costs that connection only, and connections
+    time out, so that a silent peer cannot hold the loop indefinitely.
     """
     args = build_parser().parse_args()
 
     STORAGE_DIR.mkdir(exist_ok=True)
-    context = build_tls_context(args.certfile, args.keyfile)
+    context = build_tls_context(args.certfile, args.keyfile, args.cafile)
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_sock:
         server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server_sock.bind((args.host, args.port))
         server_sock.listen()
-        print(f"Server listening on {args.host}:{args.port} over TLS")
+        print(f"Server listening on {args.host}:{args.port} over  mTLS")
 
         try:
             while True:
