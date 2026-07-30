@@ -1,7 +1,6 @@
 """
 Generate the X.509 material used by the project.
 """
-
 import datetime
 import ipaddress
 import os
@@ -16,6 +15,8 @@ CA_KEY_PATH = CERTS_DIR / "ca-key.pem"
 CA_CERT_PATH = CERTS_DIR / "ca-cert.pem"
 SERVER_KEY_PATH = CERTS_DIR / "server-key.pem"
 SERVER_CERT_PATH = CERTS_DIR / "server-cert.pem"
+CLIENT_KEY_PATH = CERTS_DIR / "client-key.pem"
+CLIENT_CERT_PATH = CERTS_DIR / "client-cert.pem"
 
 CURVE = ec.SECP256R1()
 CA_VALIDITY_DAYS = 3650
@@ -37,6 +38,17 @@ SERVER_NAME = x509.Name(
         x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
         x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Secure File Transfer"),
         x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+    ]
+)
+
+
+CLIENT_CN = "client"
+
+CLIENT_NAME = x509.Name(
+    [
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Secure File Transfer"),
+        x509.NameAttribute(NameOID.COMMON_NAME, CLIENT_CN),
     ]
 )
 
@@ -77,6 +89,7 @@ def write_private_key(path, key):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "wb") as f:
         f.write(pem)
+    os.chmod(path, 0o600)
 
 
 def write_certificate(path, cert):
@@ -195,6 +208,47 @@ def build_ca_certificate(ca_key):
     )
 
 
+def build_leaf_certificate(subject, subject_key, ca_key, ca_cert, purpose, san=None):
+    """
+    Build an end-entity certificate signed by the CA.
+
+    Args:
+        subject (x509.Name): distinguished name of the subject.
+        subject_key: private key of the subject; only the public part is used.
+        ca_key: private key of the CA, used to sign.
+        ca_cert (x509.Certificate): CA certificate, used as issuer.
+        purpose (x509.ObjectIdentifier): single extended key usage OID.
+        san (x509.SubjectAlternativeName): names the certificate is valid
+            for, or None to omit the extension.
+
+    Returns:
+        x509.Certificate: the signed end-entity certificate.
+    """
+    issued_at = now()
+    builder = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(ca_cert.subject)
+        .public_key(subject_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(issued_at - CLOCK_SKEW)
+        .not_valid_after(issued_at + datetime.timedelta(days=LEAF_VALIDITY_DAYS))
+        .add_extension(
+            x509.BasicConstraints(ca=False, path_length=None), critical=True
+        )
+        .add_extension(leaf_key_usage(), critical=True)
+        .add_extension(x509.ExtendedKeyUsage([purpose]), critical=False)
+        .add_extension(
+            x509.SubjectKeyIdentifier.from_public_key(subject_key.public_key()),
+            critical=False,
+        )
+        .add_extension(authority_key_identifier(ca_cert), critical=False)
+    )
+    if san is not None:
+        builder = builder.add_extension(san, critical=False)
+    return builder.sign(ca_key, hashes.SHA256())
+
+
 def build_server_certificate(server_key, ca_key, ca_cert):
     """
     Build the server certificate signed by the CA.
@@ -207,36 +261,40 @@ def build_server_certificate(server_key, ca_key, ca_cert):
     Returns:
         x509.Certificate: the server certificate.
     """
-    issued_at = now()
-    return (
-        x509.CertificateBuilder()
-        .subject_name(SERVER_NAME)
-        .issuer_name(ca_cert.subject)
-        .public_key(server_key.public_key())
-        .serial_number(x509.random_serial_number())
-        .not_valid_before(issued_at - CLOCK_SKEW)
-        .not_valid_after(issued_at + datetime.timedelta(days=LEAF_VALIDITY_DAYS))
-        .add_extension(
-            x509.BasicConstraints(ca=False, path_length=None), critical=True
-        )
-        .add_extension(leaf_key_usage(), critical=True)
-        .add_extension(
-            x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]),
-            critical=False,
-        )
-        .add_extension(build_san(SERVER_HOSTS), critical=False)
-        .add_extension(
-            x509.SubjectKeyIdentifier.from_public_key(server_key.public_key()),
-            critical=False,
-        )
-        .add_extension(authority_key_identifier(ca_cert), critical=False)
-        .sign(ca_key, hashes.SHA256())
+    return build_leaf_certificate(
+        SERVER_NAME,
+        server_key,
+        ca_key,
+        ca_cert,
+        ExtendedKeyUsageOID.SERVER_AUTH,
+        build_san(SERVER_HOSTS),
+    )
+
+
+def build_client_certificate(client_key, ca_key, ca_cert):
+    """
+    Build the client certificate signed by the CA.
+
+    Args:
+        client_key: private key of the client.
+        ca_key: private key of the CA, used to sign.
+        ca_cert (x509.Certificate): CA certificate, used as issuer.
+
+    Returns:
+        x509.Certificate: the client certificate.
+    """
+    return build_leaf_certificate(
+        CLIENT_NAME,
+        client_key,
+        ca_key,
+        ca_cert,
+        ExtendedKeyUsageOID.CLIENT_AUTH,
     )
 
 
 def main():
     """
-    Generate the CA and the server certificate.
+    Generate the CA, the server certificate and the client certificate.
     """
     ca_key = generate_key()
     ca_cert = build_ca_certificate(ca_key)
@@ -251,6 +309,13 @@ def main():
     write_certificate(SERVER_CERT_PATH, server_cert)
     print(f"wrote {SERVER_KEY_PATH}")
     print(f"wrote {SERVER_CERT_PATH}")
+
+    client_key = generate_key()
+    client_cert = build_client_certificate(client_key, ca_key, ca_cert)
+    write_private_key(CLIENT_KEY_PATH, client_key)
+    write_certificate(CLIENT_CERT_PATH, client_cert)
+    print(f"wrote {CLIENT_KEY_PATH}")
+    print(f"wrote {CLIENT_CERT_PATH}")
 
 
 if __name__ == "__main__":
