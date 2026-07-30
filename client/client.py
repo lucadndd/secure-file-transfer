@@ -10,7 +10,10 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = BASE_DIR.parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
-CA_CERT_PATH = PROJECT_ROOT / "certs" / "ca-cert.pem"
+CERTS_DIR = PROJECT_ROOT / "certs"
+CA_CERT_PATH = CERTS_DIR / "ca-cert.pem"
+CLIENT_CERT_PATH = CERTS_DIR / "client-cert.pem"
+CLIENT_KEY_PATH = CERTS_DIR / "client-key.pem"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
@@ -30,28 +33,49 @@ def build_parser():
     parser.add_argument("filename", help="File to upload (path) or download (name)")
     parser.add_argument("--host", default="127.0.0.1", help="Server address")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
+    parser.add_argument("--certfile", type=Path, default=CLIENT_CERT_PATH, help="Client certificate to present, in PEM form")
+    parser.add_argument("--keyfile", type=Path, default=CLIENT_KEY_PATH, help="Private key matching --certfile, in PEM form")
     return parser
 
 
-def build_tls_context():
+def build_tls_context(certfile, keyfile):
     """
     Build the TLS context used for the outgoing connection.
 
+    Args:
+        certfile (Path): client certificate to present, in PEM form.
+        keyfile (Path): private key matching certfile, in PEM form.
+
     Returns:
-        ssl.SSLContext: context that authenticates the server.
+        ssl.SSLContext: context for a mutually authenticated connection.
 
     Raises:
-        FileNotFoundError: if the CA certificate has not been generated yet.
+        FileNotFoundError: if any of the certificate files is missing.
+        RuntimeError: if the certificate and the key do not belong together.
     """
-    if not CA_CERT_PATH.is_file():
-        raise FileNotFoundError(
-            f"CA certificate not found at {CA_CERT_PATH}: "
-            f"run certs/generate_certs.py first"
-        )
+    for label, path in (
+        ("CA certificate", CA_CERT_PATH),
+        ("client certificate", certfile),
+        ("client private key", keyfile),
+    ):
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"{label} not found at {path}: run certs/generate_certs.py first"
+            )
+
     context = ssl.create_default_context(cafile=str(CA_CERT_PATH))
     context.check_hostname = True
     context.verify_mode = ssl.CERT_REQUIRED
     context.minimum_version = ssl.TLSVersion.TLSv1_2
+
+    try:
+        context.load_cert_chain(certfile, keyfile)
+    except ssl.SSLError as exc:
+        raise RuntimeError(
+            f"Could not load the client identity: {certfile} and {keyfile} "
+            f"do not belong together ({exc.reason})."
+        ) from exc
+
     return context
 
 
@@ -131,6 +155,31 @@ def require_ok(reply):
     raise RuntimeError(f"Server rejected the request: {detail}.")
 
 
+def validate_request(args):
+    """
+    Reject impossible requests before opening a connection.
+
+    Args:
+        args (argparse.Namespace): parsed command-line arguments.
+
+    Raises:
+        FileNotFoundError: if an upload source is not a readable file.
+        ValueError: if the file name is not acceptable, or if an upload
+        exceeds the payload limit.
+    """
+    if args.op == "UPLOAD":
+        path = Path(args.filename)
+        if not path.is_file():
+            raise FileNotFoundError(f"not a readable file: {path}")
+        if not is_valid_name(path.name):
+            raise ValueError(f"cannot upload under the name {path.name!r}")
+        check_size(path.stat().st_size, MAX_PAYLOAD_BYTES, "file size")
+    elif not is_valid_name(args.filename):
+        raise ValueError(
+            f"invalid file name {args.filename!r}: it may not contain '/', '\\' or '..'"
+        )
+
+
 def do_upload(sock, filepath):
     """Send a local file to the server and report the reply."""
     if not filepath.is_file():
@@ -138,8 +187,9 @@ def do_upload(sock, filepath):
     if not is_valid_name(filepath.name):
         raise ValueError(f"cannot upload under the name {filepath.name!r}")
 
+    check_size(filepath.stat().st_size, MAX_PAYLOAD_BYTES, "file size")
     data = filepath.read_bytes()
-    check_size(len(data), MAX_PAYLOAD_BYTES, "file size")
+    check_size(len(data), MAX_PAYLOAD_BYTES, "file size after reading")
 
     send_message(
         sock,
@@ -174,7 +224,8 @@ def main():
     args = build_parser().parse_args()
 
     try:
-        context = build_tls_context()
+        validate_request(args)
+        context = build_tls_context(args.certfile, args.keyfile)
         with socket.create_connection(
             (args.host, args.port), timeout=SOCKET_TIMEOUT
         ) as raw_sock:
