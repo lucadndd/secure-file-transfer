@@ -65,6 +65,24 @@ def build_tls_context(certfile, keyfile, cafile):
     return context
 
 
+def peer_common_name(tls_conn):
+    """
+    Read the common name from the certificate the peer presented.
+
+    Only meaningful after a successful handshake: with CERT_REQUIRED a
+    client without a valid certificate never gets this far.
+
+    Args:
+        tls_conn (ssl.SSLSocket): connection whose handshake has completed.
+
+    Returns:
+        str: the subject common name, or "unknown" if the certificate
+        carries none.
+    """
+    subject = dict(entry[0] for entry in tls_conn.getpeercert()["subject"])
+    return subject.get("commonName", "unknown")
+
+
 def read_exactly_n_bytes(conn, n):
     """
     Read exactly n bytes from a socket.
@@ -268,6 +286,7 @@ def main():
                     print(f"Connection from {addr}")
                     try:
                         with context.wrap_socket(conn, server_side=True) as tls_conn:
+                            print(f"Authenticated client: {peer_common_name(tls_conn)}")
                             handle_request(tls_conn)
                     except ssl.SSLError as e:
                         print(f"TLS handshake failed: {e}")
