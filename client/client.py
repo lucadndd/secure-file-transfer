@@ -131,6 +131,31 @@ def require_ok(reply):
     raise RuntimeError(f"Server rejected the request: {detail}.")
 
 
+def validate_request(args):
+    """
+    Reject impossible requests before opening a connection.
+
+    Args:
+        args (argparse.Namespace): parsed command-line arguments.
+
+    Raises:
+        FileNotFoundError: if an upload source is not a readable file.
+        ValueError: if the file name is not acceptable, or if an upload
+        exceeds the payload limit.
+    """
+    if args.op == "UPLOAD":
+        path = Path(args.filename)
+        if not path.is_file():
+            raise FileNotFoundError(f"not a readable file: {path}")
+        if not is_valid_name(path.name):
+            raise ValueError(f"cannot upload under the name {path.name!r}")
+        check_size(path.stat().st_size, MAX_PAYLOAD_BYTES, "file size")
+    elif not is_valid_name(args.filename):
+        raise ValueError(
+            f"invalid file name {args.filename!r}: it may not contain '/', '\\' or '..'"
+        )
+
+
 def do_upload(sock, filepath):
     """Send a local file to the server and report the reply."""
     if not filepath.is_file():
@@ -138,8 +163,9 @@ def do_upload(sock, filepath):
     if not is_valid_name(filepath.name):
         raise ValueError(f"cannot upload under the name {filepath.name!r}")
 
+    check_size(filepath.stat().st_size, MAX_PAYLOAD_BYTES, "file size")
     data = filepath.read_bytes()
-    check_size(len(data), MAX_PAYLOAD_BYTES, "file size")
+    check_size(len(data), MAX_PAYLOAD_BYTES, "file size after reading")
 
     send_message(
         sock,
@@ -174,6 +200,7 @@ def main():
     args = build_parser().parse_args()
 
     try:
+        validate_request(args)
         context = build_tls_context()
         with socket.create_connection(
             (args.host, args.port), timeout=SOCKET_TIMEOUT
