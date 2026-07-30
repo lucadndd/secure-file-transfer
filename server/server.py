@@ -9,6 +9,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CERTS_DIR = PROJECT_ROOT / "certs"
 DEFAULT_CERT_PATH = CERTS_DIR / "server-cert.pem"
 DEFAULT_KEY_PATH = CERTS_DIR / "server-key.pem"
+DEFAULT_CA_PATH = CERTS_DIR / "ca-cert.pem"
 
 STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
@@ -24,7 +25,7 @@ def build_parser():
     that the server can be started from any working directory.
 
     Returns:
-        argparse.ArgumentParser: parser accepting --host, --port, --certfile and --keyfile.
+        argparse.ArgumentParser: parser accepting --host, --port, --certfile, --keyfile and --cafile.
     """
     parser = argparse.ArgumentParser(description="server")
     parser.add_argument("--host", default="127.0.0.1", help="Address to bind")
@@ -33,6 +34,8 @@ def build_parser():
         help="Certificate presented to clients")
     parser.add_argument("--keyfile", type=Path, default=DEFAULT_KEY_PATH,
         help="Private key matching the certificate")
+    parser.add_argument("--cafile", type=Path, default=DEFAULT_CA_PATH,
+        help="Authority that client certificates must chain to")
     return parser
 
 
