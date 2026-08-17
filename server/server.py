@@ -160,17 +160,22 @@ def is_safe_name(name):
     """
     Check whether a file name is safe.
 
+    A single dot is rejected on its own and not as a substring: it names
+    the directory it is joined to rather than a file inside it, while any
+    ordinary name carrying an extension must stay acceptable.
+
     Args:
         name: file name taken from a message header; any JSON value, since
         the peer chooses what to send.
 
     Returns:
         bool: False if the name is not a non-empty string, or if it could
-        escape the storage directory.
+        escape the storage directory or name the directory itself.
     """
     return (
         isinstance(name, str)
         and bool(name)
+        and name != "."
         and "/" not in name
         and "\\" not in name
         and ".." not in name
