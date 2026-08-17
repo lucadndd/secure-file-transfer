@@ -187,7 +187,9 @@ def handle_upload(conn, header, storage_dir):
     Receive the file announced in the header and save it to storage.
 
     The announced size is checked before reading, so that a peer cannot make
-    the server allocate an arbitrary amount of memory.
+    the server allocate an arbitrary amount of memory. The storage space is
+    created on the first upload, so a client that only downloads never gets
+    one.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
@@ -208,6 +210,7 @@ def handle_upload(conn, header, storage_dir):
         return
 
     data = read_exactly_n_bytes(conn, size)
+    storage_dir.mkdir(exist_ok=True)
     with open(storage_dir / filename, "wb") as f:
         f.write(data)
 
@@ -299,7 +302,7 @@ def main():
                                 print(f"Rejected unusable client identity: {identity!r}")
                                 continue
                             print(f"Authenticated client: {identity}")
-                            handle_request(tls_conn, STORAGE_DIR)
+                            handle_request(tls_conn, STORAGE_DIR / identity)
                     except ssl.SSLError as e:
                         print(f"TLS handshake failed: {e}")
                     except (ConnectionError, OSError) as e:
