@@ -12,8 +12,7 @@ PROJECT_ROOT = BASE_DIR.parent
 DOWNLOAD_DIR = BASE_DIR / "downloads"
 CERTS_DIR = PROJECT_ROOT / "certs"
 CA_CERT_PATH = CERTS_DIR / "ca-cert.pem"
-CLIENT_CERT_PATH = CERTS_DIR / "client-cert.pem"
-CLIENT_KEY_PATH = CERTS_DIR / "client-key.pem"
+DEFAULT_IDENTITY = "alice"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
@@ -33,8 +32,9 @@ def build_parser():
     parser.add_argument("filename", help="File to upload (path) or download (name)")
     parser.add_argument("--host", default="127.0.0.1", help="Server address")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
-    parser.add_argument("--certfile", type=Path, default=CLIENT_CERT_PATH, help="Client certificate to present, in PEM form")
-    parser.add_argument("--keyfile", type=Path, default=CLIENT_KEY_PATH, help="Private key matching --certfile, in PEM form")
+    parser.add_argument("--identity", default=DEFAULT_IDENTITY, help="Name of the certificate pair in certs/ to present")
+    parser.add_argument("--certfile", type=Path, default=None, help="Client certificate to present, in PEM form; overrides --identity")
+    parser.add_argument("--keyfile", type=Path, default=None, help="Private key matching --certfile, in PEM form; overrides --identity")
     return parser
 
 
@@ -225,7 +225,9 @@ def main():
 
     try:
         validate_request(args)
-        context = build_tls_context(args.certfile, args.keyfile)
+        certfile = args.certfile or CERTS_DIR / f"{args.identity}-cert.pem"
+        keyfile = args.keyfile or CERTS_DIR / f"{args.identity}-key.pem"
+        context = build_tls_context(certfile, keyfile)
         with socket.create_connection(
             (args.host, args.port), timeout=SOCKET_TIMEOUT
         ) as raw_sock:
