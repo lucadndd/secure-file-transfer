@@ -182,7 +182,7 @@ def is_safe_name(name):
     )
 
 
-def handle_upload(conn, header):
+def handle_upload(conn, header, storage_dir):
     """
     Receive the file announced in the header and save it to storage.
 
@@ -192,6 +192,7 @@ def handle_upload(conn, header):
     Args:
         conn (socket.socket): connected socket to read the payload from.
         header (dict): parsed UPLOAD header with "filename" and "size" keys.
+        storage_dir (Path): directory the file is written to.
     """
     filename = header.get("filename")
     size = header.get("size")
@@ -207,20 +208,21 @@ def handle_upload(conn, header):
         return
 
     data = read_exactly_n_bytes(conn, size)
-    with open(STORAGE_DIR / filename, "wb") as f:
+    with open(storage_dir / filename, "wb") as f:
         f.write(data)
 
     send_message(conn, {"status": "OK"})
     print(f"Saved {filename} ({size} bytes)")
 
 
-def handle_download(conn, header):
+def handle_download(conn, header, storage_dir):
     """
     Send the file requested in the header back to the client.
 
     Args:
         conn (socket.socket): connected socket to write to.
         header (dict): parsed DOWNLOAD header with a "filename" key.
+        storage_dir (Path): directory the file is read from.
     """
     filename = header.get("filename")
 
@@ -229,7 +231,7 @@ def handle_download(conn, header):
         print(f"Rejected unsafe file name: {filename!r}")
         return
 
-    path = STORAGE_DIR / filename
+    path = storage_dir / filename
     if not path.is_file():
         send_message(conn, {"status": "ERROR", "reason": "not_found"})
         print(f"Requested file not found: {filename}")
@@ -241,12 +243,13 @@ def handle_download(conn, header):
     print(f"Sent {filename} ({len(data)} bytes)")
 
 
-def handle_request(conn):
+def handle_request(conn, storage_dir):
     """
     Read one request and dispatch it to the matching handler.
 
     Args:
         conn (socket.socket): connected socket to serve.
+        storage_dir (Path): directory the request is resolved against.
     """
     try:
         header = read_message_header(conn)
@@ -257,9 +260,9 @@ def handle_request(conn):
 
     op = header.get("op")
     if op == "UPLOAD":
-        handle_upload(conn, header)
+        handle_upload(conn, header, storage_dir)
     elif op == "DOWNLOAD":
-        handle_download(conn, header)
+        handle_download(conn, header, storage_dir)
     else:
         send_message(conn, {"status": "ERROR", "reason": "bad_request"})
         print(f"Rejected unknown operation: {op!r}")
@@ -296,7 +299,7 @@ def main():
                                 print(f"Rejected unusable client identity: {identity!r}")
                                 continue
                             print(f"Authenticated client: {identity}")
-                            handle_request(tls_conn)
+                            handle_request(tls_conn, STORAGE_DIR)
                     except ssl.SSLError as e:
                         print(f"TLS handshake failed: {e}")
                     except (ConnectionError, OSError) as e:
