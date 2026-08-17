@@ -15,8 +15,6 @@ CA_KEY_PATH = CERTS_DIR / "ca-key.pem"
 CA_CERT_PATH = CERTS_DIR / "ca-cert.pem"
 SERVER_KEY_PATH = CERTS_DIR / "server-key.pem"
 SERVER_CERT_PATH = CERTS_DIR / "server-cert.pem"
-CLIENT_KEY_PATH = CERTS_DIR / "client-key.pem"
-CLIENT_CERT_PATH = CERTS_DIR / "client-cert.pem"
 
 CURVE = ec.SECP256R1()
 CA_VALIDITY_DAYS = 3650
@@ -42,15 +40,7 @@ SERVER_NAME = x509.Name(
 )
 
 
-CLIENT_CN = "client"
-
-CLIENT_NAME = x509.Name(
-    [
-        x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Secure File Transfer"),
-        x509.NameAttribute(NameOID.COMMON_NAME, CLIENT_CN),
-    ]
-)
+CLIENT_NAMES = ["alice", "bob"]
 
 
 def now():
@@ -271,11 +261,57 @@ def build_server_certificate(server_key, ca_key, ca_cert):
     )
 
 
-def build_client_certificate(client_key, ca_key, ca_cert):
+def client_name(cn):
+    """
+    Build the distinguished name of a client.
+
+    Args:
+        cn (str): common name identifying the client.
+
+    Returns:
+        x509.Name: distinguished name for the client certificate.
+    """
+    return x509.Name(
+        [
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "IT"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Secure File Transfer"),
+            x509.NameAttribute(NameOID.COMMON_NAME, cn),
+        ]
+    )
+
+
+def client_key_path(cn):
+    """
+    Return the file the private key of a client is written to.
+
+    Args:
+        cn (str): common name identifying the client.
+
+    Returns:
+        Path: destination file.
+    """
+    return CERTS_DIR / f"{cn}-key.pem"
+
+
+def client_cert_path(cn):
+    """
+    Return the file the certificate of a client is written to.
+
+    Args:
+        cn (str): common name identifying the client.
+
+    Returns:
+        Path: destination file.
+    """
+    return CERTS_DIR / f"{cn}-cert.pem"
+
+
+def build_client_certificate(cn, client_key, ca_key, ca_cert):
     """
     Build the client certificate signed by the CA.
 
     Args:
+        cn (str): common name identifying the client.
         client_key: private key of the client.
         ca_key: private key of the CA, used to sign.
         ca_cert (x509.Certificate): CA certificate, used as issuer.
@@ -284,7 +320,7 @@ def build_client_certificate(client_key, ca_key, ca_cert):
         x509.Certificate: the client certificate.
     """
     return build_leaf_certificate(
-        CLIENT_NAME,
+        client_name(cn),
         client_key,
         ca_key,
         ca_cert,
@@ -294,7 +330,7 @@ def build_client_certificate(client_key, ca_key, ca_cert):
 
 def main():
     """
-    Generate the CA, the server certificate and the client certificate.
+    Generate the CA, the server certificate and one certificate per client.
     """
     ca_key = generate_key()
     ca_cert = build_ca_certificate(ca_key)
@@ -310,12 +346,13 @@ def main():
     print(f"wrote {SERVER_KEY_PATH}")
     print(f"wrote {SERVER_CERT_PATH}")
 
-    client_key = generate_key()
-    client_cert = build_client_certificate(client_key, ca_key, ca_cert)
-    write_private_key(CLIENT_KEY_PATH, client_key)
-    write_certificate(CLIENT_CERT_PATH, client_cert)
-    print(f"wrote {CLIENT_KEY_PATH}")
-    print(f"wrote {CLIENT_CERT_PATH}")
+    for cn in CLIENT_NAMES:
+        client_key = generate_key()
+        client_cert = build_client_certificate(cn, client_key, ca_key, ca_cert)
+        write_private_key(client_key_path(cn), client_key)
+        write_certificate(client_cert_path(cn), client_cert)
+        print(f"wrote {client_key_path(cn)}")
+        print(f"wrote {client_cert_path(cn)}")
 
 
 if __name__ == "__main__":
