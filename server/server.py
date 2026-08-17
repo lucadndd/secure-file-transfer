@@ -76,11 +76,11 @@ def peer_common_name(tls_conn):
         tls_conn (ssl.SSLSocket): connection whose handshake has completed.
 
     Returns:
-        str: the subject common name, or "unknown" if the certificate
+        str | None: the subject common name, or None if the certificate
         carries none.
     """
     subject = dict(entry[0] for entry in tls_conn.getpeercert()["subject"])
-    return subject.get("commonName", "unknown")
+    return subject.get("commonName")
 
 
 def read_exactly_n_bytes(conn, n):
