@@ -330,13 +330,14 @@ def handle_download(conn, header, storage_dir):
         return
 
     data = path.read_bytes()
+    digest = recorded.read_text().strip()
 
-    if not hmac.compare_digest(sha256_hex(data), recorded.read_text().strip()):
+    if not hmac.compare_digest(sha256_hex(data), digest):
         send_message(conn, {"status": "ERROR", "reason": "integrity_failed"})
         print(f"Refused {filename}: stored file diverges from recorded digest")
         return
 
-    send_message(conn, {"status": "OK", "size": len(data)}, data)
+    send_message(conn,{"status": "OK", "size": len(data), "sha256": digest},data,)
     print(f"Sent {filename} ({len(data)} bytes)")
 
 
