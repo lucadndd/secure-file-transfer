@@ -24,6 +24,7 @@ DIGEST_HEX_LENGTH = 64
 REASON_MESSAGES = {
     "not_found": "the server has no file with that name",
     "already_exists": "the server already has a file with that name",
+    "integrity_failed": "the file does not match its digest, so the transfer was refused",
     "invalid_name": "that file name is not allowed (no '/', '\\' or '..')",
     "bad_request": "the server could not understand the request",
 }
