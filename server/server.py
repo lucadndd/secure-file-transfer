@@ -211,8 +211,13 @@ def handle_upload(conn, header, storage_dir):
 
     data = read_exactly_n_bytes(conn, size)
     storage_dir.mkdir(exist_ok=True)
-    with open(storage_dir / filename, "wb") as f:
-        f.write(data)
+    try:
+        with open(storage_dir / filename, "xb") as f:
+            f.write(data)
+    except FileExistsError:
+        send_message(conn, {"status": "ERROR", "reason": "already_exists"})
+        print(f"Refused to overwrite existing file: {filename}")
+        return
 
     send_message(conn, {"status": "OK"})
     print(f"Saved {filename} ({size} bytes)")
