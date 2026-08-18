@@ -1,6 +1,7 @@
 """
 Generate the X.509 material used by the project.
 """
+import argparse
 import datetime
 import ipaddress
 import os
@@ -21,7 +22,7 @@ CA_VALIDITY_DAYS = 3650
 LEAF_VALIDITY_DAYS = 365
 CLOCK_SKEW = datetime.timedelta(minutes=5)
 
-SERVER_HOSTS = ["localhost", "127.0.0.1"]
+DEFAULT_SERVER_HOSTS = ["localhost", "127.0.0.1"]
 
 CA_NAME = x509.Name(
     [
@@ -239,7 +240,7 @@ def build_leaf_certificate(subject, subject_key, ca_key, ca_cert, purpose, san=N
     return builder.sign(ca_key, hashes.SHA256())
 
 
-def build_server_certificate(server_key, ca_key, ca_cert):
+def build_server_certificate(server_key, ca_key, ca_cert, hosts):
     """
     Build the server certificate signed by the CA.
 
@@ -247,6 +248,8 @@ def build_server_certificate(server_key, ca_key, ca_cert):
         server_key: private key of the server.
         ca_key: private key of the CA, used to sign.
         ca_cert (x509.Certificate): CA certificate, used as issuer.
+        hosts (list[str]): names and addresses the certificate is valid
+            for.
 
     Returns:
         x509.Certificate: the server certificate.
@@ -257,7 +260,7 @@ def build_server_certificate(server_key, ca_key, ca_cert):
         ca_key,
         ca_cert,
         ExtendedKeyUsageOID.SERVER_AUTH,
-        build_san(SERVER_HOSTS),
+        build_san(hosts),
     )
 
 
@@ -328,10 +331,54 @@ def build_client_certificate(cn, client_key, ca_key, ca_cert):
     )
 
 
+def build_parser():
+    """
+    Build the command-line argument parser.
+
+    Returns:
+        argparse.ArgumentParser: parser accepting repeated --server-host.
+    """
+    parser = argparse.ArgumentParser(
+        description="Generate the CA, the server certificate and one "
+        "certificate per client."
+    )
+    parser.add_argument(
+        "--server-host",
+        action="append",
+        default=None,
+        metavar="NAME_OR_IP",
+        help="Extra name or address the server certificate is valid for; "
+        "repeat for several. Always includes "
+        f"{' and '.join(DEFAULT_SERVER_HOSTS)}.",
+    )
+    return parser
+
+
+def server_hosts(extra):
+    """
+    Return the names the server certificate is issued for.
+
+    Args:
+        extra (list[str] | None): additional names or addresses.
+
+    Returns:
+        list[str]: the defaults followed by the extras, without
+        duplicates.
+    """
+    hosts = list(DEFAULT_SERVER_HOSTS)
+    for host in extra or []:
+        if host not in hosts:
+            hosts.append(host)
+    return hosts
+
+
 def main():
     """
     Generate the CA, the server certificate and one certificate per client.
     """
+    args = build_parser().parse_args()
+    hosts = server_hosts(args.server_host)
+
     ca_key = generate_key()
     ca_cert = build_ca_certificate(ca_key)
     write_private_key(CA_KEY_PATH, ca_key)
@@ -340,11 +387,11 @@ def main():
     print(f"wrote {CA_CERT_PATH}")
 
     server_key = generate_key()
-    server_cert = build_server_certificate(server_key, ca_key, ca_cert)
+    server_cert = build_server_certificate(server_key, ca_key, ca_cert, hosts)
     write_private_key(SERVER_KEY_PATH, server_key)
     write_certificate(SERVER_CERT_PATH, server_cert)
     print(f"wrote {SERVER_KEY_PATH}")
-    print(f"wrote {SERVER_CERT_PATH}")
+    print(f"wrote {SERVER_CERT_PATH} valid for {', '.join(hosts)}")
 
     for cn in CLIENT_NAMES:
         client_key = generate_key()
