@@ -1,6 +1,7 @@
 """File transfer client"""
 import argparse
 import hashlib
+import hmac
 import json
 import socket
 import ssl
@@ -18,6 +19,7 @@ MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
 RECV_CHUNK = 65536
+DIGEST_HEX_LENGTH = 64
 
 REASON_MESSAGES = {
     "not_found": "the server has no file with that name",
@@ -127,6 +129,29 @@ def sha256_hex(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def check_digest(value, label):
+    """
+    Validate a digest announced by the peer.
+
+    Args:
+        value: candidate digest; any JSON value, since the peer chooses
+            what to send.
+        label (str): name used in the error message.
+
+    Returns:
+        str: the digest in lowercase.
+
+    Raises:
+        ValueError: if it is not 64 hexadecimal characters.
+    """
+    if not isinstance(value, str) or len(value) != DIGEST_HEX_LENGTH:
+        raise ValueError(f"{label} is not a 64-character string: {value!r}")
+    lowered = value.lower()
+    if any(c not in "0123456789abcdef" for c in lowered):
+        raise ValueError(f"{label} is not hexadecimal: {value!r}")
+    return lowered
+
+
 def is_valid_name(name):
     """
     Report whether a file name is safe to send or save under.
@@ -233,12 +258,19 @@ def do_download(sock, filename):
 
     reply = require_ok(read_message_header(sock))
     size = check_size(reply.get("size"), MAX_PAYLOAD_BYTES, "announced size")
+    announced = check_digest(reply.get("sha256"), "announced digest")
     data = read_exactly_n_bytes(sock, size)
+
+    if not hmac.compare_digest(sha256_hex(data), announced):
+        raise RuntimeError(
+            f"The server sent {filename} with a payload that does not match "
+            f"the digest it announced; nothing was saved."
+        )
 
     DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
     destination = DOWNLOAD_DIR / filename
     destination.write_bytes(data)
-    print(f"Downloaded {filename} ({len(data)} bytes) -> {destination}")
+    print(f"Downloaded {filename} ({len(data)} bytes, sha256 {announced}) -> {destination}")
 
 
 def main():
