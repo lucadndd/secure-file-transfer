@@ -1,4 +1,6 @@
 import argparse
+import hashlib
+import hmac
 import json
 import socket
 import ssl
@@ -15,6 +17,8 @@ STORAGE_DIR = Path(__file__).parent / "storage"
 MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
+DIGEST_HEX_LENGTH = 64
+DIGEST_SUFFIX = ".sha256"
 
 
 def build_parser():
@@ -182,6 +186,51 @@ def is_safe_name(name):
     )
 
 
+def sha256_hex(data):
+    """
+    Return the SHA-256 of some bytes as lowercase hexadecimal.
+
+    Args:
+        data (bytes): content to digest.
+
+    Returns:
+        str: 64 hexadecimal characters.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
+def is_valid_digest(digest):
+    """
+    Check whether a digest announced by a peer is well-formed.
+
+    Args:
+        digest: value taken from a message header; any JSON value, since
+        the peer chooses what to send.
+
+    Returns:
+        bool: True for exactly 64 lowercase hexadecimal characters.
+    """
+    return (
+        isinstance(digest, str)
+        and len(digest) == DIGEST_HEX_LENGTH
+        and all(c in "0123456789abcdef" for c in digest)
+    )
+
+
+def digest_path(storage_dir, filename):
+    """
+    Return the file the digest of a stored file is written to.
+
+    Args:
+        storage_dir (Path): directory holding the file.
+        filename (str): name of the file the digest belongs to.
+
+    Returns:
+        Path: destination file.
+    """
+    return storage_dir / f"{filename}{DIGEST_SUFFIX}"
+
+
 def handle_upload(conn, header, storage_dir):
     """
     Receive the file announced in the header and save it to storage.
@@ -189,15 +238,19 @@ def handle_upload(conn, header, storage_dir):
     The announced size is checked before reading, so that a peer cannot make
     the server allocate an arbitrary amount of memory. The storage space is
     created on the first upload, so a client that only downloads never gets
-    one.
+    one. The digest is checked before the file is opened, so a payload that
+    does not match leaves nothing on disk. The digest file is written first,
+    so that a data file cannot be left without one.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
-        header (dict): parsed UPLOAD header with "filename" and "size" keys.
+        header (dict): parsed UPLOAD header with "filename", "size" and
+        "sha256" keys.
         storage_dir (Path): directory the file is written to.
     """
     filename = header.get("filename")
     size = header.get("size")
+    digest = header.get("sha256")
 
     if not isinstance(size, int) or size < 0 or size > MAX_PAYLOAD_BYTES:
         send_message(conn, {"status": "ERROR", "reason": "bad_request"})
@@ -209,12 +262,34 @@ def handle_upload(conn, header, storage_dir):
         print(f"Rejected unsafe file name: {filename!r}")
         return
 
+    if not is_valid_digest(digest):
+        send_message(conn, {"status": "ERROR", "reason": "bad_request"})
+        print(f"Rejected upload with missing or invalid digest: {digest!r}")
+        return
+
     data = read_exactly_n_bytes(conn, size)
+
+    if not hmac.compare_digest(sha256_hex(data), digest):
+        send_message(conn, {"status": "ERROR", "reason": "integrity_failed"})
+        print(f"Refused {filename}: payload does not match the announced digest")
+        return
+
     storage_dir.mkdir(exist_ok=True)
+    recorded = digest_path(storage_dir, filename)
+
+    try:
+        with open(recorded, "x") as f:
+            f.write(digest)
+    except FileExistsError:
+        send_message(conn, {"status": "ERROR", "reason": "already_exists"})
+        print(f"Refused to overwrite existing file: {filename}")
+        return
+
     try:
         with open(storage_dir / filename, "xb") as f:
             f.write(data)
     except FileExistsError:
+        recorded.unlink()
         send_message(conn, {"status": "ERROR", "reason": "already_exists"})
         print(f"Refused to overwrite existing file: {filename}")
         return
@@ -226,6 +301,9 @@ def handle_upload(conn, header, storage_dir):
 def handle_download(conn, header, storage_dir):
     """
     Send the file requested in the header back to the client.
+
+    A file with no recorded digest is reported as absent, so that an
+    incomplete pair is not distinguishable from a file that never existed.
 
     Args:
         conn (socket.socket): connected socket to write to.
@@ -245,9 +323,21 @@ def handle_download(conn, header, storage_dir):
         print(f"Requested file not found: {filename}")
         return
 
-    data = path.read_bytes()
+    recorded = digest_path(storage_dir, filename)
+    if not recorded.is_file():
+        send_message(conn, {"status": "ERROR", "reason": "not_found"})
+        print(f"Refused {filename}: stored digest missing")
+        return
 
-    send_message(conn, {"status": "OK", "size": len(data)}, data)
+    data = path.read_bytes()
+    digest = recorded.read_text().strip()
+
+    if not hmac.compare_digest(sha256_hex(data), digest):
+        send_message(conn, {"status": "ERROR", "reason": "integrity_failed"})
+        print(f"Refused {filename}: stored file diverges from recorded digest")
+        return
+
+    send_message(conn,{"status": "OK", "size": len(data), "sha256": digest},data,)
     print(f"Sent {filename} ({len(data)} bytes)")
 
 
