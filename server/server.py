@@ -18,6 +18,7 @@ MAX_HEADER_BYTES = 64 * 1024
 MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
 DIGEST_HEX_LENGTH = 64
+DIGEST_SUFFIX = ".sha256"
 
 
 def build_parser():
@@ -216,6 +217,20 @@ def is_valid_digest(digest):
     )
 
 
+def digest_path(storage_dir, filename):
+    """
+    Return the file the digest of a stored file is written to.
+
+    Args:
+        storage_dir (Path): directory holding the file.
+        filename (str): name of the file the digest belongs to.
+
+    Returns:
+        Path: destination file.
+    """
+    return storage_dir / f"{filename}{DIGEST_SUFFIX}"
+
+
 def handle_upload(conn, header, storage_dir):
     """
     Receive the file announced in the header and save it to storage.
@@ -224,7 +239,8 @@ def handle_upload(conn, header, storage_dir):
     the server allocate an arbitrary amount of memory. The storage space is
     created on the first upload, so a client that only downloads never gets
     one. The digest is checked before the file is opened, so a payload that
-    does not match leaves anything on disk.
+    does not match leaves nothing on disk. The digest file is written first,
+    so that a data file cannot be left without one.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
@@ -259,10 +275,21 @@ def handle_upload(conn, header, storage_dir):
         return
 
     storage_dir.mkdir(exist_ok=True)
+    recorded = digest_path(storage_dir, filename)
+
+    try:
+        with open(recorded, "x") as f:
+            f.write(digest)
+    except FileExistsError:
+        send_message(conn, {"status": "ERROR", "reason": "already_exists"})
+        print(f"Refused to overwrite existing file: {filename}")
+        return
+
     try:
         with open(storage_dir / filename, "xb") as f:
             f.write(data)
     except FileExistsError:
+        recorded.unlink()
         send_message(conn, {"status": "ERROR", "reason": "already_exists"})
         print(f"Refused to overwrite existing file: {filename}")
         return
