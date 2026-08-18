@@ -20,6 +20,7 @@ RECV_CHUNK = 65536
 
 REASON_MESSAGES = {
     "not_found": "the server has no file with that name",
+    "already_exists": "the server already has a file with that name",
     "invalid_name": "that file name is not allowed (no '/', '\\' or '..')",
     "bad_request": "the server could not understand the request",
 }
