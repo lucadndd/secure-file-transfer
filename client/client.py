@@ -36,6 +36,7 @@ def build_parser():
     parser.add_argument("op", type=str.upper, choices=["UPLOAD", "DOWNLOAD"], help="Operation to perform (case-insensitive)")
     parser.add_argument("filename", help="File to upload (path) or download (name)")
     parser.add_argument("--host", default="127.0.0.1", help="Server address")
+    parser.add_argument("--server-name", default=None, help="Name to check the server certificate against; defaults to --host")
     parser.add_argument("--port", type=int, default=9000, help="Server port")
     parser.add_argument("--identity", default=DEFAULT_IDENTITY, help="Name of the certificate pair in certs/ to present")
     parser.add_argument("--certfile", type=Path, default=None, help="Client certificate to present, in PEM form; overrides --identity")
@@ -283,10 +284,11 @@ def main():
         certfile = args.certfile or CERTS_DIR / f"{args.identity}-cert.pem"
         keyfile = args.keyfile or CERTS_DIR / f"{args.identity}-key.pem"
         context = build_tls_context(certfile, keyfile)
+        server_name = args.server_name or args.host
         with socket.create_connection(
             (args.host, args.port), timeout=SOCKET_TIMEOUT
         ) as raw_sock:
-            with context.wrap_socket(raw_sock, server_hostname=args.host) as sock:
+            with context.wrap_socket(raw_sock, server_hostname=server_name) as sock:
                 cert = sock.getpeercert()
                 subject = dict(x[0] for x in cert["subject"])
                 print(
