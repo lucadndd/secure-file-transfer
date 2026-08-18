@@ -76,11 +76,11 @@ def peer_common_name(tls_conn):
         tls_conn (ssl.SSLSocket): connection whose handshake has completed.
 
     Returns:
-        str: the subject common name, or "unknown" if the certificate
+        str | None: the subject common name, or None if the certificate
         carries none.
     """
     subject = dict(entry[0] for entry in tls_conn.getpeercert()["subject"])
-    return subject.get("commonName", "unknown")
+    return subject.get("commonName")
 
 
 def read_exactly_n_bytes(conn, n):
@@ -160,33 +160,41 @@ def is_safe_name(name):
     """
     Check whether a file name is safe.
 
+    A single dot is rejected on its own and not as a substring: it names
+    the directory it is joined to rather than a file inside it, while any
+    ordinary name carrying an extension must stay acceptable.
+
     Args:
         name: file name taken from a message header; any JSON value, since
         the peer chooses what to send.
 
     Returns:
         bool: False if the name is not a non-empty string, or if it could
-        escape the storage directory.
+        escape the storage directory or name the directory itself.
     """
     return (
         isinstance(name, str)
         and bool(name)
+        and name != "."
         and "/" not in name
         and "\\" not in name
         and ".." not in name
     )
 
 
-def handle_upload(conn, header):
+def handle_upload(conn, header, storage_dir):
     """
     Receive the file announced in the header and save it to storage.
 
     The announced size is checked before reading, so that a peer cannot make
-    the server allocate an arbitrary amount of memory.
+    the server allocate an arbitrary amount of memory. The storage space is
+    created on the first upload, so a client that only downloads never gets
+    one.
 
     Args:
         conn (socket.socket): connected socket to read the payload from.
         header (dict): parsed UPLOAD header with "filename" and "size" keys.
+        storage_dir (Path): directory the file is written to.
     """
     filename = header.get("filename")
     size = header.get("size")
@@ -202,20 +210,22 @@ def handle_upload(conn, header):
         return
 
     data = read_exactly_n_bytes(conn, size)
-    with open(STORAGE_DIR / filename, "wb") as f:
+    storage_dir.mkdir(exist_ok=True)
+    with open(storage_dir / filename, "wb") as f:
         f.write(data)
 
     send_message(conn, {"status": "OK"})
     print(f"Saved {filename} ({size} bytes)")
 
 
-def handle_download(conn, header):
+def handle_download(conn, header, storage_dir):
     """
     Send the file requested in the header back to the client.
 
     Args:
         conn (socket.socket): connected socket to write to.
         header (dict): parsed DOWNLOAD header with a "filename" key.
+        storage_dir (Path): directory the file is read from.
     """
     filename = header.get("filename")
 
@@ -224,7 +234,7 @@ def handle_download(conn, header):
         print(f"Rejected unsafe file name: {filename!r}")
         return
 
-    path = STORAGE_DIR / filename
+    path = storage_dir / filename
     if not path.is_file():
         send_message(conn, {"status": "ERROR", "reason": "not_found"})
         print(f"Requested file not found: {filename}")
@@ -236,12 +246,13 @@ def handle_download(conn, header):
     print(f"Sent {filename} ({len(data)} bytes)")
 
 
-def handle_request(conn):
+def handle_request(conn, storage_dir):
     """
     Read one request and dispatch it to the matching handler.
 
     Args:
         conn (socket.socket): connected socket to serve.
+        storage_dir (Path): directory the request is resolved against.
     """
     try:
         header = read_message_header(conn)
@@ -252,9 +263,9 @@ def handle_request(conn):
 
     op = header.get("op")
     if op == "UPLOAD":
-        handle_upload(conn, header)
+        handle_upload(conn, header, storage_dir)
     elif op == "DOWNLOAD":
-        handle_download(conn, header)
+        handle_download(conn, header, storage_dir)
     else:
         send_message(conn, {"status": "ERROR", "reason": "bad_request"})
         print(f"Rejected unknown operation: {op!r}")
@@ -286,8 +297,12 @@ def main():
                     print(f"Connection from {addr}")
                     try:
                         with context.wrap_socket(conn, server_side=True) as tls_conn:
-                            print(f"Authenticated client: {peer_common_name(tls_conn)}")
-                            handle_request(tls_conn)
+                            identity = peer_common_name(tls_conn)
+                            if not is_safe_name(identity):
+                                print(f"Rejected unusable client identity: {identity!r}")
+                                continue
+                            print(f"Authenticated client: {identity}")
+                            handle_request(tls_conn, STORAGE_DIR / identity)
                     except ssl.SSLError as e:
                         print(f"TLS handshake failed: {e}")
                     except (ConnectionError, OSError) as e:
