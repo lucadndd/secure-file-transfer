@@ -5,6 +5,7 @@ import argparse
 import datetime
 import ipaddress
 import os
+import socket
 from pathlib import Path
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -331,6 +332,38 @@ def build_client_certificate(cn, client_key, ca_key, ca_cert):
     )
 
 
+def local_addresses():
+    """
+    Return the IPv4 addresses this machine can be reached at.
+
+    Returns:
+        list[str]: addresses found, without duplicates and without
+        loopback, which the defaults already carry.
+    """
+    found = []
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("192.0.2.1", 9))
+        found.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    finally:
+        probe.close()
+
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.append(info[4][0])
+    except socket.gaierror:
+        pass
+
+    addresses = []
+    for address in found:
+        if not address.startswith("127.") and address not in addresses:
+            addresses.append(address)
+    return addresses
+
+
 def build_parser():
     """
     Build the command-line argument parser.
@@ -351,22 +384,32 @@ def build_parser():
         "repeat for several. Always includes "
         f"{' and '.join(DEFAULT_SERVER_HOSTS)}.",
     )
+    parser.add_argument(
+        "--no-detect",
+        action="store_true",
+        help="Do not add the addresses of this machine to the "
+        "certificate.",
+    )
     return parser
 
 
-def server_hosts(extra):
+def server_hosts(extra, detect=True):
     """
     Return the names the server certificate is issued for.
 
     Args:
         extra (list[str] | None): additional names or addresses.
+        detect (bool): whether to add the addresses of this machine.
 
     Returns:
-        list[str]: the defaults followed by the extras, without
-        duplicates.
+        list[str]: the defaults, the detected addresses and the extras,
+        without duplicates.
     """
     hosts = list(DEFAULT_SERVER_HOSTS)
-    for host in extra or []:
+    candidates = list(extra or [])
+    if detect:
+        candidates = local_addresses() + candidates
+    for host in candidates:
         if host not in hosts:
             hosts.append(host)
     return hosts
@@ -377,7 +420,7 @@ def main():
     Generate the CA, the server certificate and one certificate per client.
     """
     args = build_parser().parse_args()
-    hosts = server_hosts(args.server_host)
+    hosts = server_hosts(args.server_host, detect=not args.no_detect)
 
     ca_key = generate_key()
     ca_cert = build_ca_certificate(ca_key)
