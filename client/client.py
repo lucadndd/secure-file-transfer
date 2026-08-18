@@ -1,5 +1,6 @@
 """File transfer client"""
 import argparse
+import hashlib
 import json
 import socket
 import ssl
@@ -113,6 +114,19 @@ def check_size(value, limit, label):
     return value
 
 
+def sha256_hex(data):
+    """
+    Return the SHA-256 of some bytes as lowercase hexadecimal.
+
+    Args:
+        data (bytes): content to digest.
+
+    Returns:
+        str: 64 hexadecimal characters.
+    """
+    return hashlib.sha256(data).hexdigest()
+
+
 def is_valid_name(name):
     """
     Report whether a file name is safe to send or save under.
@@ -192,13 +206,20 @@ def do_upload(sock, filepath):
     data = filepath.read_bytes()
     check_size(len(data), MAX_PAYLOAD_BYTES, "file size after reading")
 
+    digest = sha256_hex(data)
+
     send_message(
         sock,
-        {"op": "UPLOAD", "filename": filepath.name, "size": len(data)},
+        {
+            "op": "UPLOAD",
+            "filename": filepath.name,
+            "size": len(data),
+            "sha256": digest,
+        },
         data,
     )
     require_ok(read_message_header(sock))
-    print(f"Uploaded {filepath.name} ({len(data)} bytes)")
+    print(f"Uploaded {filepath.name} ({len(data)} bytes, sha256 {digest})")
 
 
 def do_download(sock, filename):
