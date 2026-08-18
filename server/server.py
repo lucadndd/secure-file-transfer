@@ -302,6 +302,9 @@ def handle_download(conn, header, storage_dir):
     """
     Send the file requested in the header back to the client.
 
+    A file with no recorded digest is reported as absent, so that an
+    incomplete pair is not distinguishable from a file that never existed.
+
     Args:
         conn (socket.socket): connected socket to write to.
         header (dict): parsed DOWNLOAD header with a "filename" key.
@@ -320,7 +323,18 @@ def handle_download(conn, header, storage_dir):
         print(f"Requested file not found: {filename}")
         return
 
+    recorded = digest_path(storage_dir, filename)
+    if not recorded.is_file():
+        send_message(conn, {"status": "ERROR", "reason": "not_found"})
+        print(f"Refused {filename}: stored digest missing")
+        return
+
     data = path.read_bytes()
+
+    if not hmac.compare_digest(sha256_hex(data), recorded.read_text().strip()):
+        send_message(conn, {"status": "ERROR", "reason": "integrity_failed"})
+        print(f"Refused {filename}: stored file diverges from recorded digest")
+        return
 
     send_message(conn, {"status": "OK", "size": len(data)}, data)
     print(f"Sent {filename} ({len(data)} bytes)")
