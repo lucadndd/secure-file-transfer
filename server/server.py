@@ -375,6 +375,8 @@ def main():
     Each connection carries a single request and is then closed. A client
     that fails authentication costs that connection only, and connections
     time out, so that a silent peer cannot hold the loop indefinitely.
+    The negotiated parameters are reported before the identity is read, so
+    that they are recorded even for a connection that is then turned away.
     """
     args = build_parser().parse_args()
 
@@ -395,6 +397,7 @@ def main():
                     print(f"Connection from {addr}")
                     try:
                         with context.wrap_socket(conn, server_side=True) as tls_conn:
+                            print(f"{tls_conn.version()} with {tls_conn.cipher()[0]}")
                             identity = peer_common_name(tls_conn)
                             if not is_safe_name(identity):
                                 print(f"Rejected unusable client identity: {identity!r}")
