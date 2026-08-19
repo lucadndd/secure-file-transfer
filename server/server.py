@@ -170,7 +170,9 @@ def is_safe_name(name):
 
     A single dot is rejected on its own and not as a substring: it names
     the directory it is joined to rather than a file inside it, while any
-    ordinary name carrying an extension must stay acceptable.
+    ordinary name carrying an extension must stay acceptable. The metadata
+    directory is rejected as well, since a file saved under that name would
+    take the place the digests are kept in.
 
     Args:
         name: file name taken from a message header; any JSON value, since
@@ -178,12 +180,14 @@ def is_safe_name(name):
 
     Returns:
         bool: False if the name is not a non-empty string, or if it could
-        escape the storage directory or name the directory itself.
+        escape the storage directory, name the directory itself, or take
+        the place of the metadata directory.
     """
     return (
         isinstance(name, str)
         and bool(name)
         and name != "."
+        and name != METADATA_DIR_NAME
         and "/" not in name
         and "\\" not in name
         and ".." not in name
