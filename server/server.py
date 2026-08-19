@@ -49,7 +49,9 @@ def build_tls_context(certfile, keyfile, cafile):
 
     Every client must present a certificate that chains to the given
     authority, so an unauthenticated peer is turned away during the
-    handshake and never reaches the application protocol.
+    handshake and never reaches the application protocol. The lowest
+    acceptable protocol version is stated here rather than left to the
+    library default, so that the policy travels with the program.
 
     Args:
         certfile (Path): certificate to present.
@@ -66,6 +68,7 @@ def build_tls_context(certfile, keyfile, cafile):
     context.load_cert_chain(certfile=certfile, keyfile=keyfile)
     context.load_verify_locations(cafile=cafile)
     context.verify_mode = ssl.CERT_REQUIRED
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     return context
 
 
