@@ -19,6 +19,7 @@ MAX_PAYLOAD_BYTES = 100 * 1024 * 1024
 SOCKET_TIMEOUT = 30.0
 DIGEST_HEX_LENGTH = 64
 DIGEST_SUFFIX = ".sha256"
+METADATA_DIR_NAME = ".meta"
 
 
 def build_parser():
@@ -169,7 +170,9 @@ def is_safe_name(name):
 
     A single dot is rejected on its own and not as a substring: it names
     the directory it is joined to rather than a file inside it, while any
-    ordinary name carrying an extension must stay acceptable.
+    ordinary name carrying an extension must stay acceptable. The metadata
+    directory is rejected as well, since a file saved under that name would
+    take the place the digests are kept in.
 
     Args:
         name: file name taken from a message header; any JSON value, since
@@ -177,12 +180,14 @@ def is_safe_name(name):
 
     Returns:
         bool: False if the name is not a non-empty string, or if it could
-        escape the storage directory or name the directory itself.
+        escape the storage directory, name the directory itself, or take
+        the place of the metadata directory.
     """
     return (
         isinstance(name, str)
         and bool(name)
         and name != "."
+        and name != METADATA_DIR_NAME
         and "/" not in name
         and "\\" not in name
         and ".." not in name
@@ -224,6 +229,9 @@ def digest_path(storage_dir, filename):
     """
     Return the file the digest of a stored file is written to.
 
+    The digests live in their own directory, so that a name a client is
+    free to choose can never collide with the name a digest is kept under.
+
     Args:
         storage_dir (Path): directory holding the file.
         filename (str): name of the file the digest belongs to.
@@ -231,7 +239,7 @@ def digest_path(storage_dir, filename):
     Returns:
         Path: destination file.
     """
-    return storage_dir / f"{filename}{DIGEST_SUFFIX}"
+    return storage_dir / METADATA_DIR_NAME / f"{filename}{DIGEST_SUFFIX}"
 
 
 def handle_upload(conn, header, storage_dir):
@@ -277,8 +285,8 @@ def handle_upload(conn, header, storage_dir):
         print(f"Refused {filename}: payload does not match the announced digest")
         return
 
-    storage_dir.mkdir(exist_ok=True)
     recorded = digest_path(storage_dir, filename)
+    recorded.parent.mkdir(parents=True, exist_ok=True)
 
     try:
         with open(recorded, "x") as f:
