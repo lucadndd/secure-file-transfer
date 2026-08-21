@@ -1,0 +1,6 @@
+# Python: 3.10+ minimum — from 3.10 socket.timeout is an alias of
+#         TimeoutError, which is the branch client.py uses to report
+#         "The server did not respond in time."
+
+# X.509 certificate and ECDSA P-256 key generation (certs/generate_certs.py)
+cryptography
