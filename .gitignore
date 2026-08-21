@@ -5,3 +5,4 @@
 *.csr
 *.p12
 *.pfx
+docs/api/build/
